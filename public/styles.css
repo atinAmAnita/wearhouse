@@ -552,14 +552,9 @@ td {
     min-height: 200px;
 }
 
-.backup-button-container {
-    text-align: center;
-    margin-top: 25px;
-}
-
-.btn-large {
-    padding: 15px 40px;
-    font-size: 1rem;
+.export-card-backup {
+    background: linear-gradient(135deg, var(--bg-card) 0%, rgba(0, 255, 136, 0.05) 100%);
+    border-color: var(--accent-primary);
 }
 
 .export-card:hover {
