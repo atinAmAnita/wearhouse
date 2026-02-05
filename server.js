@@ -243,10 +243,10 @@ async function generateBarcode(text) {
 // ============================================
 const config = {
     ebay: {
-        clientId: process.env.EBAY_CLIENT_ID,
-        clientSecret: process.env.EBAY_CLIENT_SECRET,
-        ruName: process.env.EBAY_RUNAME,
-        environment: process.env.EBAY_ENVIRONMENT || 'sandbox',
+        clientId: process.env.EBAY_CLIENT_ID?.trim(),
+        clientSecret: process.env.EBAY_CLIENT_SECRET?.trim(),
+        ruName: process.env.EBAY_RUNAME?.trim(),
+        environment: (process.env.EBAY_ENVIRONMENT || 'sandbox').trim(),
         scopes: [
             'https://api.ebay.com/oauth/api_scope',
             'https://api.ebay.com/oauth/api_scope/sell.inventory',
