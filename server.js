@@ -1079,6 +1079,9 @@ app.post('/api/ebay/publish-all/:accountId', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Debug page
+app.get('/debug', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'debug.html')); });
+
 // Admin routes
 app.get('/admin', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'admin.html')); });
 app.post('/api/admin/login', (req, res) => { res.json({ success: req.body.password === config.adminPassword }); });

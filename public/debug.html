@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>STOCKFORGE - eBay Debug</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            color: #f97316;
+        }
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 40px;
+        }
+        .card {
+            background: #252540;
+            border: 1px solid #333;
+            padding: 30px;
+            margin-bottom: 20px;
+        }
+        .card h2 {
+            margin-bottom: 20px;
+            color: #f97316;
+            font-size: 1.2rem;
+        }
+        .status {
+            padding: 15px;
+            background: #1a1a2e;
+            border: 1px solid #333;
+            margin-bottom: 20px;
+        }
+        .status.connected { border-color: #22c55e; }
+        .status.disconnected { border-color: #ef4444; }
+        .status-label {
+            font-size: 0.8rem;
+            color: #888;
+            margin-bottom: 5px;
+        }
+        .status-value {
+            font-size: 1.1rem;
+            font-weight: bold;
+        }
+        .status-value.green { color: #22c55e; }
+        .status-value.red { color: #ef4444; }
+        select, button {
+            width: 100%;
+            padding: 15px;
+            font-size: 1rem;
+            border: none;
+            margin-bottom: 15px;
+        }
+        select {
+            background: #1a1a2e;
+            color: #eee;
+            border: 2px solid #333;
+        }
+        button {
+            background: #f97316;
+            color: white;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        button:hover { background: #ea580c; }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        button.secondary {
+            background: #333;
+        }
+        button.secondary:hover { background: #444; }
+        .results {
+            margin-top: 20px;
+            padding: 20px;
+            background: #1a1a2e;
+            border: 1px solid #333;
+            display: none;
+        }
+        .results.show { display: block; }
+        .results h3 {
+            margin-bottom: 15px;
+            color: #f97316;
+        }
+        .results table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .results th, .results td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #333;
+        }
+        .results th {
+            color: #888;
+            font-size: 0.85rem;
+        }
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 15px 25px;
+            background: #333;
+            border-left: 4px solid #f97316;
+            display: none;
+        }
+        .notification.show { display: block; }
+        .notification.error { border-color: #ef4444; }
+        .notification.success { border-color: #22c55e; }
+        .back-link {
+            text-align: center;
+            margin-top: 30px;
+        }
+        .back-link a {
+            color: #888;
+            text-decoration: none;
+        }
+        .back-link a:hover { color: #f97316; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>STOCKFORGE</h1>
+        <p class="subtitle">eBay Debug & Testing Tool</p>
+
+        <div class="card">
+            <h2>Connection Status</h2>
+            <div id="connectionStatus" class="status">
+                <div class="status-label">Loading...</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Select eBay Account</h2>
+            <select id="accountSelect">
+                <option value="">-- Loading accounts --</option>
+            </select>
+
+            <button onclick="viewInventory()">View eBay Inventory</button>
+            <button onclick="exportToExcel()" class="secondary">Export to Excel</button>
+        </div>
+
+        <div id="results" class="results">
+            <h3>eBay Inventory (<span id="itemCount">0</span> items)</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>SKU</th>
+                        <th>Title</th>
+                        <th>Qty</th>
+                    </tr>
+                </thead>
+                <tbody id="inventoryTable"></tbody>
+            </table>
+        </div>
+
+        <div class="back-link">
+            <a href="/">← Back to STOCKFORGE</a> | <a href="/admin">Admin Panel</a>
+        </div>
+    </div>
+
+    <div id="notification" class="notification"></div>
+
+    <script>
+        let accounts = [];
+        let environment = 'sandbox';
+
+        // Notification
+        function notify(message, type = 'info') {
+            const el = document.getElementById('notification');
+            el.textContent = message;
+            el.className = 'notification show ' + type;
+            setTimeout(() => el.classList.remove('show'), 3000);
+        }
+
+        // Load eBay status
+        async function loadStatus() {
+            try {
+                const res = await fetch('/api/ebay/status');
+                const data = await res.json();
+
+                accounts = data.accounts || [];
+                environment = data.environment || 'sandbox';
+
+                const statusDiv = document.getElementById('connectionStatus');
+
+                if (!data.configured) {
+                    statusDiv.className = 'status disconnected';
+                    statusDiv.innerHTML = `
+                        <div class="status-label">API Status</div>
+                        <div class="status-value red">Not Configured</div>
+                    `;
+                } else if (accounts.length === 0) {
+                    statusDiv.className = 'status disconnected';
+                    statusDiv.innerHTML = `
+                        <div class="status-label">Environment: ${environment}</div>
+                        <div class="status-value red">No Accounts Connected</div>
+                    `;
+                } else {
+                    const activeCount = accounts.filter(a => a.hasValidToken).length;
+                    statusDiv.className = 'status connected';
+                    statusDiv.innerHTML = `
+                        <div class="status-label">Environment: ${environment}</div>
+                        <div class="status-value green">${activeCount} Account(s) Active</div>
+                    `;
+                }
+
+                // Populate account dropdown
+                const select = document.getElementById('accountSelect');
+                select.innerHTML = '<option value="">-- Select Account --</option>' +
+                    accounts.map(acc => `
+                        <option value="${acc.id}" ${!acc.hasValidToken ? 'disabled' : ''}>
+                            ${acc.name} ${!acc.hasValidToken ? '(Expired)' : ''}
+                        </option>
+                    `).join('');
+
+            } catch (err) {
+                notify('Failed to load status: ' + err.message, 'error');
+            }
+        }
+
+        // Get selected account
+        function getAccountId() {
+            return document.getElementById('accountSelect').value;
+        }
+
+        // View inventory
+        async function viewInventory() {
+            const accountId = getAccountId();
+            if (!accountId) {
+                notify('Please select an account first', 'error');
+                return;
+            }
+
+            notify('Loading inventory...');
+
+            try {
+                const res = await fetch(`/api/ebay/inventory/${accountId}`);
+                const data = await res.json();
+
+                if (data.error) throw new Error(data.error);
+
+                const items = data.inventoryItems || [];
+                document.getElementById('itemCount').textContent = items.length;
+
+                const tbody = document.getElementById('inventoryTable');
+                tbody.innerHTML = items.map(item => `
+                    <tr>
+                        <td>${item.sku}</td>
+                        <td>${item.product?.title || '-'}</td>
+                        <td>${item.availability?.shipToLocationAvailability?.quantity || 0}</td>
+                    </tr>
+                `).join('') || '<tr><td colspan="3">No items found</td></tr>';
+
+                document.getElementById('results').classList.add('show');
+                notify('Loaded ' + items.length + ' items', 'success');
+
+            } catch (err) {
+                notify('Error: ' + err.message, 'error');
+            }
+        }
+
+        // Export to Excel
+        function exportToExcel() {
+            const accountId = getAccountId();
+            if (!accountId) {
+                notify('Please select an account first', 'error');
+                return;
+            }
+
+            notify('Downloading Excel file...');
+            window.location.href = `/api/debug/ebay-export/${accountId}`;
+        }
+
+        // Init
+        loadStatus();
+    </script>
+</body>
+</html>
