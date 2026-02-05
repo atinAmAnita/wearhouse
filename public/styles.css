@@ -534,8 +534,9 @@ td {
 /* Export Cards */
 .export-options {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    grid-template-columns: repeat(2, minmax(300px, 400px));
     gap: 25px;
+    justify-content: center;
 }
 
 .export-card {
