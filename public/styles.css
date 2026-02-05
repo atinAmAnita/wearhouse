@@ -552,7 +552,12 @@ td {
     min-height: 200px;
 }
 
+.export-top-row {
+    margin-bottom: 25px;
+}
+
 .export-card-backup {
+    width: 625px;
     background: linear-gradient(135deg, var(--bg-card) 0%, rgba(0, 255, 136, 0.05) 100%);
     border-color: var(--accent-primary);
 }
