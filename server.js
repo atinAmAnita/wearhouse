@@ -1084,12 +1084,22 @@ app.get('/debug', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'd
 
 // Admin routes
 app.get('/admin', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'admin.html')); });
-app.post('/api/admin/login', (req, res) => { res.json({ success: req.body.password === config.adminPassword }); });
+app.post('/api/admin/login', (req, res) => {
+    if (req.body.password === config.adminPassword) {
+        res.json({ success: true });
+    } else {
+        res.status(401).json({ success: false, error: 'Invalid password' });
+    }
+});
 app.post('/api/admin/ebay/connect', (req, res) => {
     if (req.body.password !== config.adminPassword) return res.status(401).json({ error: 'Invalid password' });
     if (!config.isEbayConfigured()) return res.status(400).json({ error: 'eBay API not configured' });
     if (!req.body.accountName) return res.status(400).json({ error: 'Account name required' });
     res.json({ authUrl: ebayAPI.getAuthUrl(req.body.accountName) });
+});
+app.post('/api/admin/ebay/accounts', async (req, res) => {
+    if (req.body.password !== config.adminPassword) return res.status(401).json({ error: 'Invalid password' });
+    res.json(await data.getAllAccounts());
 });
 app.delete('/api/admin/ebay/account/:accountId', async (req, res) => {
     if (req.body.password !== config.adminPassword) return res.status(401).json({ error: 'Invalid password' });
