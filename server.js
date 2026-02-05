@@ -286,6 +286,14 @@ const ebayAPI = {
         return `${this.endpoints.auth}/oauth2/authorize?client_id=${config.ebay.clientId}&redirect_uri=${encodeURIComponent(config.ebay.ruName)}&response_type=code&scope=${scopes}&state=${state}`;
     },
 
+    // Reconnect with existing account ID (for token refresh)
+    getReconnectUrl(accountId, accountName) {
+        this.pendingAuth = { accountId, accountName };
+        const scopes = encodeURIComponent(config.ebay.scopes.join(' '));
+        const state = encodeURIComponent(JSON.stringify({ accountId, accountName }));
+        return `${this.endpoints.auth}/oauth2/authorize?client_id=${config.ebay.clientId}&redirect_uri=${encodeURIComponent(config.ebay.ruName)}&response_type=code&scope=${scopes}&state=${state}`;
+    },
+
     async exchangeCodeForToken(authCode, state) {
         let accountId, accountName;
         try {
@@ -1096,6 +1104,17 @@ app.post('/api/admin/ebay/connect', (req, res) => {
     if (!config.isEbayConfigured()) return res.status(400).json({ error: 'eBay API not configured' });
     if (!req.body.accountName) return res.status(400).json({ error: 'Account name required' });
     res.json({ authUrl: ebayAPI.getAuthUrl(req.body.accountName) });
+});
+
+// Reconnect existing account (refresh tokens)
+app.post('/api/admin/ebay/reconnect', (req, res) => {
+    if (req.body.password !== config.adminPassword) return res.status(401).json({ error: 'Invalid password' });
+    if (!config.isEbayConfigured()) return res.status(400).json({ error: 'eBay API not configured' });
+    if (!req.body.accountId || !req.body.accountName) return res.status(400).json({ error: 'Account ID and name required' });
+
+    // Use existing account ID for reconnection
+    const authUrl = ebayAPI.getReconnectUrl(req.body.accountId, req.body.accountName);
+    res.json({ authUrl });
 });
 app.post('/api/admin/ebay/accounts', async (req, res) => {
     if (req.body.password !== config.adminPassword) return res.status(401).json({ error: 'Invalid password' });

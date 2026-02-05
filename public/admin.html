@@ -54,6 +54,11 @@
             border-left: 4px solid var(--accent-primary);
         }
 
+        .account-actions {
+            display: flex;
+            gap: 10px;
+        }
+
         .account-info h4 {
             margin: 0 0 8px 0;
             color: var(--text-primary);
@@ -374,7 +379,10 @@ ruName: 'your-runame'</pre>
                                     ${isActive ? 'Active' : 'Token Expired'}
                                 </span>
                             </div>
-                            <button class="btn btn-danger" onclick="removeAccount('${account.id}')">Remove</button>
+                            <div class="account-actions">
+                                <button class="btn btn-primary" onclick="reconnectAccount('${account.id}', '${account.name}')">Reconnect</button>
+                                <button class="btn btn-danger" onclick="removeAccount('${account.id}')">Remove</button>
+                            </div>
                         </div>
                     `;
                 }).join('');
@@ -398,6 +406,28 @@ ruName: 'your-runame'</pre>
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ password: adminPassword, accountName })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    // Redirect to eBay auth
+                    window.location.href = data.authUrl;
+                } else {
+                    showNotification(data.error, 'error');
+                }
+            } catch (err) {
+                showNotification('Error: ' + err.message, 'error');
+            }
+        }
+
+        // Reconnect account (refresh tokens)
+        async function reconnectAccount(accountId, accountName) {
+            try {
+                const response = await fetch('/api/admin/ebay/reconnect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: adminPassword, accountId, accountName })
                 });
 
                 const data = await response.json();
