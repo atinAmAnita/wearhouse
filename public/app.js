@@ -1055,6 +1055,35 @@ const loadEbayInventory = () => eBay.loadInventory();
 const printBarcode = () => window.print();
 const getAdjustQty = () => parseInt(UI.el('adjustQtyInput')?.value) || 1;
 
+// Full backup import
+async function importFullBackup(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    try {
+        UI.notify('Reading backup file...', 'info');
+        const text = await file.text();
+        const data = JSON.parse(text);
+
+        if (!data.inventory || !Array.isArray(data.inventory)) {
+            throw new Error('Invalid backup file format');
+        }
+
+        UI.notify(`Importing ${data.inventory.length} items...`, 'info');
+
+        const response = await API.post('/api/import/full', data);
+        UI.notify(response.message, 'success');
+
+        // Refresh inventory view
+        Inventory.load();
+    } catch (err) {
+        UI.notify('Import failed: ' + err.message, 'error');
+    }
+
+    // Reset file input
+    input.value = '';
+}
+
 // ============================================
 // INITIALIZATION
 // ============================================

@@ -564,6 +564,32 @@ td {
     font-size: 0.95rem;
 }
 
+.export-card-full {
+    grid-column: 1 / -1;
+    background: linear-gradient(135deg, var(--bg-card) 0%, rgba(0, 255, 136, 0.05) 100%);
+    border-color: var(--accent-primary);
+}
+
+.btn-success {
+    background: linear-gradient(135deg, #00cc6a 0%, #00ff88 100%);
+    color: #000;
+    font-weight: 700;
+}
+
+.btn-success:hover {
+    box-shadow: 0 0 20px rgba(0, 255, 136, 0.5);
+}
+
+.btn-warning {
+    background: linear-gradient(135deg, #ff9500 0%, #ffb84d 100%);
+    color: #000;
+    font-weight: 700;
+}
+
+.btn-warning:hover {
+    box-shadow: 0 0 20px rgba(255, 149, 0, 0.5);
+}
+
 /* Notification */
 .notification {
     position: fixed;

@@ -600,6 +600,105 @@ app.get('/api/export/ebay', async (req, res) => {
     res.send(csv);
 });
 
+// Full database export (JSON with all nested data)
+app.get('/api/export/full', async (req, res) => {
+    try {
+        const items = process.env.MONGODB_URI
+            ? await db.inventory.getAll()
+            : Object.values(localInventory.items);
+
+        const accounts = process.env.MONGODB_URI
+            ? await db.ebayAccounts.getAll()
+            : Object.values(localAccounts);
+
+        // Remove sensitive token data from accounts export
+        const safeAccounts = accounts.map(acc => ({
+            accountId: acc.accountId,
+            name: acc.name,
+            addedAt: acc.addedAt,
+            lastSync: acc.lastSync
+        }));
+
+        const exportData = {
+            version: "3.0",
+            exportDate: new Date().toISOString(),
+            itemCount: items.length,
+            inventory: items,
+            ebayAccounts: safeAccounts
+        };
+
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', `attachment; filename=stockforge_backup_${new Date().toISOString().split('T')[0]}.json`);
+        res.send(JSON.stringify(exportData, null, 2));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Full database import (JSON)
+app.post('/api/import/full', async (req, res) => {
+    try {
+        const { inventory, version } = req.body;
+
+        if (!inventory || !Array.isArray(inventory)) {
+            return res.status(400).json({ error: 'Invalid backup file format' });
+        }
+
+        let imported = 0;
+        let updated = 0;
+        let errors = [];
+
+        for (const item of inventory) {
+            try {
+                const sku = item.sku || item.SKU;
+                if (!sku) {
+                    errors.push({ item: 'unknown', error: 'Missing SKU' });
+                    continue;
+                }
+
+                const existing = await data.getItem(sku);
+
+                const itemData = {
+                    sku: sku,
+                    itemCode: item.itemCode || item.ItemCode || sku.substring(0, 4),
+                    drawerNumber: item.drawerNumber || item.DrawerNumber || '',
+                    positionNumber: item.positionNumber || item.PositionNumber || '',
+                    fullLocation: item.fullLocation || item.FullLocation || '',
+                    price: item.price || item.Price || 0,
+                    currentQty: item.currentQty || item.Quantity || 0,
+                    description: item.description || item.Description || '',
+                    categoryId: item.categoryId || null,
+                    categoryName: item.categoryName || null,
+                    condition: item.condition || null,
+                    itemSpecifics: item.itemSpecifics || {},
+                    dateAdded: item.dateAdded ? new Date(item.dateAdded) : new Date(),
+                    lastModified: new Date(),
+                    history: item.history || []
+                };
+
+                if (existing) {
+                    await data.updateItem(sku, itemData);
+                    updated++;
+                } else {
+                    await data.createItem(itemData);
+                    imported++;
+                }
+            } catch (err) {
+                errors.push({ item: item.sku || 'unknown', error: err.message });
+            }
+        }
+
+        res.json({
+            message: `Import complete: ${imported} new, ${updated} updated, ${errors.length} errors`,
+            imported,
+            updated,
+            errors: errors.length > 0 ? errors : undefined
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // eBay API routes
 app.get('/api/ebay/status', async (req, res) => { res.json(await ebayAPI.getStatus()); });
 app.get('/api/ebay/accounts', async (req, res) => { res.json(await data.getAllAccounts()); });

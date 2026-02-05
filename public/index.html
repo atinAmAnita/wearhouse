@@ -293,6 +293,11 @@
         <section id="export" class="tab-content">
             <h2>Export Data</h2>
             <div class="export-options">
+                <div class="export-card export-card-full">
+                    <h3>Full Database Backup</h3>
+                    <p>Export complete database with all history, categories, and item specifics. Use this for backup/restore or migrating between environments.</p>
+                    <a href="/api/export/full" class="btn btn-success" download>Download Full Backup (JSON)</a>
+                </div>
                 <div class="export-card">
                     <h3>eBay File Exchange</h3>
                     <p>Export inventory in eBay's File Exchange CSV format for bulk updates.</p>
@@ -302,6 +307,16 @@
                     <h3>Excel Spreadsheet</h3>
                     <p>Export full inventory data as an Excel file.</p>
                     <a href="/api/export/excel" class="btn btn-primary" download>Download Excel</a>
+                </div>
+            </div>
+
+            <h2 style="margin-top: 2rem;">Import Data</h2>
+            <div class="export-options">
+                <div class="export-card export-card-full">
+                    <h3>Restore from Backup</h3>
+                    <p>Import a full database backup (JSON). This will add new items and update existing ones.</p>
+                    <input type="file" id="backupFileInput" accept=".json" style="display: none;" onchange="importFullBackup(this)">
+                    <button class="btn btn-warning" onclick="document.getElementById('backupFileInput').click()">Upload Backup (JSON)</button>
                 </div>
             </div>
         </section>

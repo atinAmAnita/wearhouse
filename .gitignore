@@ -24,3 +24,5 @@ Thumbs.db
 config.js
 .ebay-accounts.json
 inventory_backup.xlsx
+
+.vercel
