@@ -533,13 +533,14 @@ td {
 
 /* Export Cards */
 .export-options {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(300px, 400px));
+    display: flex;
+    flex-wrap: wrap;
     gap: 25px;
     justify-content: center;
 }
 
 .export-card {
+    width: 300px;
     padding: 30px;
     background: var(--bg-card);
     border: 1px solid var(--border-color);
