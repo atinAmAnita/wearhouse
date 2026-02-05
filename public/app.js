@@ -292,6 +292,16 @@ const AddItem = {
                 description
             });
 
+            // Apply pending advanced settings if any
+            const pendingAdvanced = Advanced.getPendingSettings();
+            if (pendingAdvanced && data.item?.SKU) {
+                try {
+                    await API.advanced.update(data.item.SKU, pendingAdvanced);
+                } catch (advErr) {
+                    console.error('Error saving advanced settings:', advErr);
+                }
+            }
+
             // Show result
             const resultPanel = UI.el('addResult');
             UI.show(resultPanel);
@@ -303,6 +313,7 @@ const AddItem = {
                 <p><strong>Price:</strong> $${parseFloat(data.item.Price || 0).toFixed(2)}</p>
                 <p><strong>Quantity:</strong> ${data.item.Quantity}</p>
                 <p><strong>Description:</strong> ${data.item.Description || 'N/A'}</p>
+                ${pendingAdvanced ? '<p><strong>Details:</strong> Category & condition set</p>' : ''}
             `);
 
             UI.el('barcodeImage').src = data.barcode;
@@ -355,6 +366,31 @@ const Lookup = {
 
             // Set the price input to current price
             UI.el('adjustPriceInput').value = data.item.Price || '';
+
+            // Fetch and display item details (category, condition)
+            try {
+                const advData = await API.advanced.get(sku);
+                const categoryEl = UI.el('lookupCategory');
+                const conditionEl = UI.el('lookupCondition');
+
+                if (advData.CategoryName) {
+                    categoryEl.textContent = advData.CategoryName;
+                    categoryEl.classList.remove('not-set');
+                } else {
+                    categoryEl.textContent = 'Not set';
+                    categoryEl.classList.add('not-set');
+                }
+
+                if (advData.Condition) {
+                    conditionEl.textContent = advData.Condition.replace(/_/g, ' ');
+                    conditionEl.classList.remove('not-set');
+                } else {
+                    conditionEl.textContent = 'Not set';
+                    conditionEl.classList.add('not-set');
+                }
+            } catch (advErr) {
+                console.error('Error loading item details:', advErr);
+            }
 
             UI.el('lookupBarcodeImage').src = data.barcode;
             UI.notify('Item found!', 'success');
@@ -597,42 +633,77 @@ const Generate = {
 };
 
 // ============================================
-// ADVANCED - Category & Item Specifics
+// ADVANCED - Category & Item Specifics (Modal)
 // ============================================
 const Advanced = {
     selectedCategory: null,
     currentSku: null,
     itemSpecificsDefs: [],
+    context: null, // 'add' or 'lookup'
+    pendingSettings: null, // Store settings for new items before they're created
 
     init() {
-        // Listen for item selection
-        UI.el('advancedItemSelect')?.addEventListener('change', (e) => {
-            Advanced.loadItem(e.target.value);
+        // Close modal when clicking outside
+        UI.el('advancedModal')?.addEventListener('click', (e) => {
+            if (e.target.id === 'advancedModal') {
+                Advanced.closeModal();
+            }
         });
     },
 
-    async loadItems() {
-        try {
-            const items = await API.inventory.getAll();
-            const select = UI.el('advancedItemSelect');
-            select.innerHTML = '<option value="">-- Select an item --</option>';
+    openModal(context) {
+        Advanced.context = context;
+        const modal = UI.el('advancedModal');
+        UI.show(modal);
 
-            items.forEach(item => {
-                const opt = document.createElement('option');
-                opt.value = item.SKU;
-                opt.textContent = `${item.SKU} - ${item.Description || 'No description'} ($${parseFloat(item.Price || 0).toFixed(2)})`;
-                select.appendChild(opt);
-            });
-        } catch (err) {
-            UI.notify(err.message, 'error');
+        if (context === 'lookup' && State.currentItem) {
+            // Lookup context - load existing item's advanced settings
+            Advanced.loadItem(State.currentItem.SKU);
+        } else if (context === 'add') {
+            // Add context - show pending settings or clear form
+            Advanced.currentSku = null;
+            const itemId = UI.el('itemId')?.value || '';
+            const location = UI.el('location')?.value || '';
+            const desc = UI.el('description')?.value || '';
+
+            // Show preview info
+            const infoDiv = UI.el('advancedItemInfo');
+            infoDiv.querySelector('.advanced-sku').textContent = itemId && location ? `${itemId}${location}` : 'New Item';
+            infoDiv.querySelector('.advanced-desc').textContent = desc || 'No description';
+
+            // Load pending settings if any
+            if (Advanced.pendingSettings) {
+                UI.el('itemCondition').value = Advanced.pendingSettings.condition || '';
+                if (Advanced.pendingSettings.categoryId) {
+                    Advanced.selectedCategory = {
+                        id: Advanced.pendingSettings.categoryId,
+                        name: Advanced.pendingSettings.categoryName
+                    };
+                    Advanced.showSelectedCategory();
+                }
+            } else {
+                Advanced.resetForm();
+            }
         }
+    },
+
+    closeModal() {
+        UI.hide(UI.el('advancedModal'));
+    },
+
+    resetForm() {
+        UI.el('itemCondition').value = '';
+        UI.el('categorySearch').value = '';
+        Advanced.selectedCategory = null;
+        UI.hide(UI.el('selectedCategory'));
+        UI.hide(UI.el('categoryResults'));
+        UI.hide(UI.el('itemSpecificsSection'));
+        UI.el('itemSpecificsContainer').innerHTML = '';
     },
 
     async loadItem(sku) {
         if (!sku) {
-            UI.hide(UI.el('advancedItemInfo'));
-            UI.hide(UI.el('advancedSettings'));
-            Advanced.currentSku = null;
+            Advanced.resetForm();
             return;
         }
 
@@ -643,30 +714,16 @@ const Advanced = {
             const data = await API.inventory.getItem(sku);
             const item = data.item;
 
-            // Show item summary
-            const infoPanel = UI.el('advancedItemInfo');
-            UI.show(infoPanel);
-
-            UI.setHTML(infoPanel.querySelector('.item-summary'), `
-                <p><strong>SKU</strong>${item.SKU}</p>
-                <p><strong>Location</strong>${item.FullLocation}</p>
-                <p><strong>Price</strong>$${parseFloat(item.Price || 0).toFixed(2)}</p>
-                <p><strong>Quantity</strong>${item.Quantity}</p>
-                <p><strong>Description</strong>${item.Description || 'N/A'}</p>
-            `);
+            // Show item info
+            const infoDiv = UI.el('advancedItemInfo');
+            infoDiv.querySelector('.advanced-sku').textContent = item.SKU;
+            infoDiv.querySelector('.advanced-desc').textContent = item.Description || 'No description';
 
             // Get advanced settings
             const advData = await API.advanced.get(sku);
 
-            // Show settings panel
-            UI.show(UI.el('advancedSettings'));
-
             // Set condition
-            if (advData.Condition) {
-                UI.el('itemCondition').value = advData.Condition;
-            } else {
-                UI.el('itemCondition').value = '';
-            }
+            UI.el('itemCondition').value = advData.Condition || '';
 
             // Set category
             if (advData.CategoryId) {
@@ -675,17 +732,16 @@ const Advanced = {
                     name: advData.CategoryName
                 };
                 Advanced.showSelectedCategory();
+
+                // Load and fill item specifics
+                if (advData.ItemSpecifics) {
+                    await Advanced.loadItemSpecifics(advData.CategoryId);
+                    Advanced.fillItemSpecifics(advData.ItemSpecifics);
+                }
             } else {
                 Advanced.selectedCategory = null;
                 UI.hide(UI.el('selectedCategory'));
                 UI.el('categorySearch').value = '';
-            }
-
-            // Set item specifics
-            if (advData.CategoryId && advData.ItemSpecifics) {
-                await Advanced.loadItemSpecifics(advData.CategoryId);
-                Advanced.fillItemSpecifics(advData.ItemSpecifics);
-            } else {
                 UI.hide(UI.el('itemSpecificsSection'));
             }
 
@@ -848,11 +904,6 @@ const Advanced = {
     },
 
     async saveSettings() {
-        if (!Advanced.currentSku) {
-            UI.notify('Select an item first', 'error');
-            return;
-        }
-
         const condition = UI.el('itemCondition').value;
         const itemSpecifics = Advanced.getItemSpecifics();
 
@@ -863,12 +914,32 @@ const Advanced = {
             itemSpecifics: itemSpecifics
         };
 
-        try {
-            await API.advanced.update(Advanced.currentSku, data);
-            UI.notify('Advanced settings saved!', 'success');
-        } catch (err) {
-            UI.notify(err.message, 'error');
+        if (Advanced.context === 'add') {
+            // Store settings for when item is created
+            Advanced.pendingSettings = data;
+            UI.notify('Item details saved', 'success');
+            Advanced.closeModal();
+        } else if (Advanced.context === 'lookup' && Advanced.currentSku) {
+            // Save to existing item
+            try {
+                await API.advanced.update(Advanced.currentSku, data);
+                UI.notify('Item details updated!', 'success');
+                Advanced.closeModal();
+                // Refresh the lookup display
+                Lookup.search();
+            } catch (err) {
+                UI.notify(err.message, 'error');
+            }
+        } else {
+            UI.notify('No item selected', 'error');
         }
+    },
+
+    // Get pending settings and clear them (called when creating new item)
+    getPendingSettings() {
+        const settings = Advanced.pendingSettings;
+        Advanced.pendingSettings = null;
+        return settings;
     }
 };
 
@@ -897,6 +968,7 @@ const eBay = {
         Object.values(sections).forEach(s => UI.hide(s));
 
         State.ebayAccounts = status.accounts || [];
+        State.ebayEnvironment = status.environment || 'sandbox';
 
         if (!status.configured) {
             statusCard.className = 'status-card not-configured';
@@ -988,16 +1060,28 @@ const eBay = {
                 <p><strong>Successful:</strong> ${data.results.success.length} items</p>
             `;
 
+            // Show eBay sales detected
+            if (data.results.sales?.length > 0) {
+                const totalSold = data.results.sales.reduce((sum, s) => sum + s.sold, 0);
+                html += `
+                    <p><strong style="color: var(--info);">eBay Sales Detected:</strong> ${totalSold} items sold</p>
+                    <ul style="color: var(--info);">${data.results.sales.map(s => `<li>${s.sku}: ${s.sold} sold (qty now ${s.newQty})</li>`).join('')}</ul>
+                `;
+            }
+
             if (data.results.failed.length > 0) {
                 html += `
-                    <p><strong>Failed:</strong> ${data.results.failed.length} items</p>
-                    <ul>${data.results.failed.map(f => `<li>${f.sku}: ${f.error}</li>`).join('')}</ul>
+                    <p><strong style="color: var(--danger);">Failed:</strong> ${data.results.failed.length} items</p>
+                    <ul style="color: var(--danger);">${data.results.failed.map(f => `<li>${f.sku}: ${f.error}</li>`).join('')}</ul>
                 `;
             }
 
             UI.setHTML(resultsDiv.querySelector('.sync-summary'), html);
             UI.notify(data.message, data.results.failed.length ? 'info' : 'success');
             eBay.loadStatus();
+            // Also refresh the eBay inventory list and local inventory
+            eBay.loadInventory();
+            Inventory.load();
 
         } catch (err) {
             UI.notify(err.message, 'error');
@@ -1019,6 +1103,11 @@ const eBay = {
             UI.show(inventoryDiv);
             tbody.innerHTML = '';
 
+            // Determine eBay environment for links
+            const ebayBase = State.ebayEnvironment === 'production'
+                ? 'https://www.ebay.com'
+                : 'https://sandbox.ebay.com';
+
             if (data.inventoryItems?.length > 0) {
                 data.inventoryItems.forEach(item => {
                     const row = document.createElement('tr');
@@ -1027,11 +1116,14 @@ const eBay = {
                         <td>${item.product?.title || '-'}</td>
                         <td>${item.availability?.shipToLocationAvailability?.quantity || 0}</td>
                         <td>${item.condition || '-'}</td>
+                        <td>
+                            <a href="${ebayBase}/sh/lst/active?q=${encodeURIComponent(item.sku)}" target="_blank" class="btn btn-sm btn-secondary">View</a>
+                        </td>
                     `;
                     tbody.appendChild(row);
                 });
             } else {
-                tbody.innerHTML = '<tr><td colspan="4">No items found on eBay</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5">No items found on eBay</td></tr>';
             }
 
             UI.notify('eBay inventory loaded', 'success');
@@ -1050,6 +1142,8 @@ const adjustQuantity = (delta) => Lookup.adjustQuantity(delta);
 const updatePrice = () => Lookup.updatePrice();
 const deleteCurrentItem = () => Lookup.deleteCurrent();
 const closeHistoryModal = () => History.close();
+const openAdvancedModal = (context) => Advanced.openModal(context);
+const closeAdvancedModal = () => Advanced.closeModal();
 const syncAllToEbay = () => eBay.syncAll();
 const loadEbayInventory = () => eBay.loadInventory();
 const printBarcode = () => window.print();

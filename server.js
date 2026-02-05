@@ -8,20 +8,28 @@ const db = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const isProduction = process.env.NODE_ENV === 'production';
+
+// ============================================
+// DATABASE MODE CONFIGURATION
+// ============================================
+// Default: Use MongoDB (live database) for both local and production
+// Set USE_LOCAL_DB=true in .env to use local JSON files instead
+const USE_LOCAL_DB = process.env.USE_LOCAL_DB === 'true';
+const DB_MODE = USE_LOCAL_DB ? 'local' : 'mongodb';
 
 // Middleware
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ============================================
-// LOCAL JSON FALLBACK (for development without MongoDB)
+// LOCAL JSON STORAGE (only used when USE_LOCAL_DB=true)
 // ============================================
 const JSON_DATA_FILE = path.join(__dirname, 'inventory.json');
 let localInventory = { items: {}, metadata: { version: "2.0" } };
 let localAccounts = {};
 
 function loadLocalData() {
+    if (!USE_LOCAL_DB) return;
     try {
         if (fs.existsSync(JSON_DATA_FILE)) {
             localInventory = JSON.parse(fs.readFileSync(JSON_DATA_FILE, 'utf8'));
@@ -37,9 +45,10 @@ function loadLocalData() {
 }
 
 function saveLocalData() {
-    if (isProduction) return;
+    if (!USE_LOCAL_DB) return;
     try {
         localInventory.metadata.lastModified = new Date().toISOString();
+        localInventory.metadata.totalItems = Object.keys(localInventory.items).length;
         fs.writeFileSync(JSON_DATA_FILE, JSON.stringify(localInventory, null, 2));
     } catch (err) {
         console.error('Error saving local data:', err.message);
@@ -47,7 +56,7 @@ function saveLocalData() {
 }
 
 function saveLocalAccounts() {
-    if (isProduction) return;
+    if (!USE_LOCAL_DB) return;
     try {
         const accountsFile = path.join(__dirname, '.ebay-accounts.json');
         fs.writeFileSync(accountsFile, JSON.stringify(localAccounts, null, 2));
@@ -57,11 +66,16 @@ function saveLocalAccounts() {
 }
 
 // ============================================
-// UNIFIED DATA ACCESS (MongoDB or Local JSON)
+// UNIFIED DATA ACCESS LAYER
 // ============================================
 const data = {
+    // Returns current database mode
+    getMode() {
+        return DB_MODE;
+    },
+
     async getAllItems() {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             const items = await db.inventory.getAll();
             return items.map(formatItem);
         }
@@ -69,28 +83,28 @@ const data = {
     },
 
     async getItem(sku) {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             return db.inventory.getItem(sku);
         }
         return localInventory.items[sku] || null;
     },
 
     async getItemByCode(itemCode) {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             return db.inventory.getByItemCode(itemCode);
         }
         return Object.values(localInventory.items).find(i => i.itemCode === itemCode) || null;
     },
 
     async getItemByLocation(fullLocation) {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             return db.inventory.getByLocation(fullLocation);
         }
         return Object.values(localInventory.items).find(i => i.fullLocation === fullLocation) || null;
     },
 
     async createItem(itemData) {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             return db.inventory.create(itemData);
         }
         localInventory.items[itemData.sku] = itemData;
@@ -99,7 +113,7 @@ const data = {
     },
 
     async updateItem(sku, updates) {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             return db.inventory.update(sku, updates);
         }
         if (localInventory.items[sku]) {
@@ -111,7 +125,7 @@ const data = {
     },
 
     async addHistory(sku, entry) {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             return db.inventory.addHistory(sku, entry);
         }
         if (localInventory.items[sku]) {
@@ -121,7 +135,7 @@ const data = {
     },
 
     async deleteItem(sku) {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             return db.inventory.delete(sku);
         }
         const item = localInventory.items[sku];
@@ -131,14 +145,14 @@ const data = {
     },
 
     async getAllItemCodes() {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             return db.inventory.getAllItemCodes();
         }
         return Object.values(localInventory.items).map(i => i.itemCode);
     },
 
     async getAllLocations() {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             return db.inventory.getAllLocations();
         }
         return Object.values(localInventory.items).map(i => i.drawerNumber + i.positionNumber);
@@ -146,7 +160,7 @@ const data = {
 
     // eBay Accounts
     async getAllAccounts() {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             const accounts = await db.ebayAccounts.getAll();
             return accounts.map(a => ({
                 id: a.accountId,
@@ -164,14 +178,14 @@ const data = {
     },
 
     async getAccount(accountId) {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             return db.ebayAccounts.get(accountId);
         }
         return localAccounts[accountId] || null;
     },
 
     async saveAccount(accountId, accountData) {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             return db.ebayAccounts.save(accountId, accountData);
         }
         localAccounts[accountId] = { ...localAccounts[accountId], ...accountData };
@@ -180,7 +194,7 @@ const data = {
     },
 
     async removeAccount(accountId) {
-        if (process.env.MONGODB_URI) {
+        if (!USE_LOCAL_DB) {
             return db.ebayAccounts.delete(accountId);
         }
         const removed = !!localAccounts[accountId];
@@ -385,6 +399,87 @@ const ebayAPI = {
         const result = await this.createOrUpdateInventoryItem(accountId, warehouseItem.SKU, itemData);
         await data.saveAccount(accountId, { lastSync: new Date().toISOString() });
         return result;
+    },
+
+    // Smart two-way sync: reconcile eBay sales with local inventory changes
+    async smartSyncAll(accountId) {
+        const results = { success: [], failed: [], sales: [] };
+
+        // 1. Fetch current eBay inventory
+        let ebayInventory = {};
+        try {
+            const ebayData = await this.getInventoryItems(accountId);
+            if (ebayData.inventoryItems) {
+                ebayData.inventoryItems.forEach(item => {
+                    ebayInventory[item.sku] = item.availability?.shipToLocationAvailability?.quantity || 0;
+                });
+            }
+        } catch (err) {
+            console.log('Could not fetch eBay inventory, proceeding with push-only sync:', err.message);
+        }
+
+        // 2. Get all local items
+        const localItems = await data.getAllItems();
+
+        // 3. Process each item
+        for (const item of localItems) {
+            try {
+                const fullItem = await data.getItem(item.SKU);
+                if (!fullItem) continue;
+
+                const localQty = fullItem.currentQty;
+                const lastSyncedQty = fullItem.lastSyncedQty ?? localQty; // Default to current if never synced
+                const ebayQty = ebayInventory[fullItem.sku];
+
+                let finalQty = localQty;
+                let salesDetected = 0;
+
+                // If item exists on eBay, reconcile quantities
+                if (ebayQty !== undefined) {
+                    // Calculate how many sold on eBay since last sync
+                    // sales = lastSyncedQty - ebayQty (if positive)
+                    salesDetected = Math.max(0, lastSyncedQty - ebayQty);
+
+                    if (salesDetected > 0) {
+                        // Subtract sales from local quantity
+                        finalQty = Math.max(0, localQty - salesDetected);
+
+                        // Update local inventory with sales deduction
+                        await data.updateItem(fullItem.sku, { currentQty: finalQty, lastSyncedQty: finalQty });
+                        await data.addHistory(fullItem.sku, {
+                            date: new Date(),
+                            action: 'EBAY_SALE',
+                            qty: -salesDetected,
+                            newTotal: finalQty,
+                            note: `${salesDetected} sold on eBay (detected during sync)`
+                        });
+
+                        results.sales.push({ sku: fullItem.sku, sold: salesDetected, newQty: finalQty });
+                    }
+                }
+
+                // Push to eBay with final quantity
+                await this.syncItemToEbay(accountId, {
+                    SKU: fullItem.sku,
+                    Price: fullItem.price || 0,
+                    Quantity: finalQty,
+                    Description: fullItem.description,
+                    FullLocation: fullItem.fullLocation,
+                    Condition: fullItem.condition || 'NEW',
+                    ItemSpecifics: fullItem.itemSpecifics || {}
+                });
+
+                // Update lastSyncedQty after successful sync
+                await data.updateItem(fullItem.sku, { lastSyncedQty: finalQty });
+
+                results.success.push({ sku: fullItem.sku, qty: finalQty, salesDetected });
+
+            } catch (err) {
+                results.failed.push({ sku: item.SKU, error: err.message });
+            }
+        }
+
+        return results;
     },
 
     async getStatus() {
@@ -733,16 +828,20 @@ app.post('/api/ebay/sync/:accountId/:sku', async (req, res) => {
 app.post('/api/ebay/sync-all/:accountId', async (req, res) => {
     try {
         if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) return res.status(401).json({ error: 'eBay account not connected' });
-        const results = { success: [], failed: [] };
-        const items = await data.getAllItems();
-        for (const item of items) {
-            try {
-                const fullItem = await data.getItem(item.SKU);
-                await ebayAPI.syncItemToEbay(req.params.accountId, { SKU: fullItem.sku, Price: fullItem.price || 0, Quantity: fullItem.currentQty, Description: fullItem.description, FullLocation: fullItem.fullLocation, Condition: fullItem.condition || 'NEW', ItemSpecifics: fullItem.itemSpecifics || {} });
-                results.success.push(fullItem.sku);
-            } catch (err) { results.failed.push({ sku: item.SKU, error: err.message }); }
+
+        // Use smart two-way sync
+        const results = await ebayAPI.smartSyncAll(req.params.accountId);
+
+        let message = `Synced ${results.success.length} items`;
+        if (results.sales.length > 0) {
+            const totalSold = results.sales.reduce((sum, s) => sum + s.sold, 0);
+            message += `, detected ${totalSold} eBay sales`;
         }
-        res.json({ message: `Synced ${results.success.length} items, ${results.failed.length} failed`, results });
+        if (results.failed.length > 0) {
+            message += `, ${results.failed.length} failed`;
+        }
+
+        res.json({ message, results });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -773,12 +872,20 @@ app.delete('/api/admin/ebay/account/:accountId', async (req, res) => {
 });
 
 // Health check
-app.get('/api/health', (req, res) => { res.json({ status: 'ok', env: isProduction ? 'production' : 'development', db: process.env.MONGODB_URI ? 'mongodb' : 'local' }); });
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        database: DB_MODE,
+        useLocalDB: USE_LOCAL_DB
+    });
+});
 
 // ============================================
 // START SERVER
 // ============================================
-if (!isProduction) {
+
+// Load local data if using local database
+if (USE_LOCAL_DB) {
     loadLocalData();
 }
 
@@ -787,14 +894,29 @@ if (process.env.VERCEL) {
     module.exports = app;
 } else {
     app.listen(PORT, async () => {
-        if (process.env.MONGODB_URI) {
+        // Connect to MongoDB if using live database
+        if (!USE_LOCAL_DB) {
             await db.connectDB();
         }
+
+        const itemCount = USE_LOCAL_DB
+            ? Object.keys(localInventory.items).length
+            : await db.inventory.count();
+
         console.log(`\n========================================`);
         console.log(`  STOCKFORGE - Inventory Control`);
         console.log(`========================================`);
-        console.log(`  URL: http://localhost:${PORT}`);
-        console.log(`  DB:  ${process.env.MONGODB_URI ? 'MongoDB' : 'Local JSON'}`);
+        console.log(`  URL:      http://localhost:${PORT}`);
+        console.log(`  Admin:    http://localhost:${PORT}/admin`);
+        console.log(`----------------------------------------`);
+        console.log(`  Database: ${USE_LOCAL_DB ? 'LOCAL JSON' : 'MONGODB (Live)'}`);
+        console.log(`  Items:    ${itemCount}`);
+        console.log(`----------------------------------------`);
+        if (!USE_LOCAL_DB) {
+            console.log(`  Using live database - changes sync everywhere`);
+        } else {
+            console.log(`  Using local database - changes stay local`);
+        }
         console.log(`========================================\n`);
     });
 }

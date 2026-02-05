@@ -11,15 +11,14 @@
         <header>
             <h1>STOCKFORGE</h1>
             <p class="subtitle">Inventory Control System</p>
+            <a href="/admin" class="admin-link">Admin Panel</a>
         </header>
 
         <nav class="tabs">
             <button class="tab-btn active" data-tab="add">Add Item</button>
             <button class="tab-btn" data-tab="lookup">Scan/Lookup</button>
             <button class="tab-btn" data-tab="inventory">Inventory</button>
-            <button class="tab-btn" data-tab="advanced">Advanced</button>
-            <!-- Hidden for development - eBay integration disabled -->
-            <button class="tab-btn" data-tab="ebay" style="display:none">eBay Sync</button>
+            <button class="tab-btn" data-tab="ebay">eBay Sync</button>
             <button class="tab-btn" data-tab="export">Export</button>
         </nav>
 
@@ -72,7 +71,10 @@
                 </div>
 
                 <div id="itemStatus" class="location-status"></div>
-                <button type="submit" id="submitBtn" class="btn btn-primary">New Item</button>
+                <div class="form-actions">
+                    <button type="submit" id="submitBtn" class="btn btn-primary">Add Item</button>
+                    <button type="button" class="btn btn-secondary" onclick="openAdvancedModal('add')">Item Details</button>
+                </div>
             </form>
 
             <div id="addResult" class="result-panel hidden">
@@ -99,21 +101,40 @@
             <div id="lookupResult" class="result-panel hidden">
                 <h3>Item Found</h3>
                 <div class="item-details"></div>
+
+                <!-- Item Details (Category, Condition, etc.) -->
+                <div id="lookupItemDetails" class="item-extra-details">
+                    <div class="detail-row">
+                        <span class="detail-label">Category:</span>
+                        <span id="lookupCategory" class="detail-value">Not set</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Condition:</span>
+                        <span id="lookupCondition" class="detail-value">Not set</span>
+                    </div>
+                </div>
+
                 <div class="barcode-container">
                     <img id="lookupBarcodeImage" alt="Barcode">
                 </div>
+
                 <div class="action-buttons">
-                    <div class="qty-adjust">
-                        <button class="btn btn-secondary" onclick="adjustQuantity(-getAdjustQty())">Remove</button>
-                        <input type="number" id="adjustQtyInput" value="1" min="1" class="qty-input">
-                        <button class="btn btn-success" onclick="adjustQuantity(getAdjustQty())">Add</button>
+                    <div class="action-row">
+                        <div class="qty-adjust">
+                            <button class="btn btn-secondary" onclick="adjustQuantity(-getAdjustQty())">-</button>
+                            <input type="number" id="adjustQtyInput" value="1" min="1" class="qty-input">
+                            <button class="btn btn-success" onclick="adjustQuantity(getAdjustQty())">+</button>
+                        </div>
+                        <div class="price-adjust">
+                            <span class="price-label">$</span>
+                            <input type="number" id="adjustPriceInput" min="0" step="0.01" class="price-input" placeholder="0.00">
+                            <button class="btn btn-primary" onclick="updatePrice()">Update</button>
+                        </div>
                     </div>
-                    <div class="price-adjust">
-                        <label>Price: $</label>
-                        <input type="number" id="adjustPriceInput" min="0" step="0.01" class="price-input" placeholder="0.00">
-                        <button class="btn btn-primary" onclick="updatePrice()">Update Price</button>
+                    <div class="action-row">
+                        <button class="btn btn-secondary" onclick="openAdvancedModal('lookup')">Edit Details</button>
+                        <button class="btn btn-danger" onclick="deleteCurrentItem()">Delete Item</button>
                     </div>
-                    <button class="btn btn-danger" onclick="deleteCurrentItem()">Delete</button>
                 </div>
             </div>
         </section>
@@ -147,76 +168,9 @@
             </div>
         </section>
 
-        <!-- Advanced Tab - eBay Categories & Item Specifics -->
-        <section id="advanced" class="tab-content">
-            <h2>Advanced Item Settings</h2>
-            <p class="subtitle">Configure eBay categories, condition, and item specifics</p>
-
-            <!-- Item Selection -->
-            <div class="form-group" style="max-width: 400px; margin-bottom: 20px;">
-                <label for="advancedItemSelect">Select Item to Configure</label>
-                <select id="advancedItemSelect" class="form-control">
-                    <option value="">-- Select an item --</option>
-                </select>
-            </div>
-
-            <!-- Selected Item Info -->
-            <div id="advancedItemInfo" class="result-panel hidden" style="margin-bottom: 20px;">
-                <div class="item-summary"></div>
-            </div>
-
-            <!-- Advanced Settings Form -->
-            <div id="advancedSettings" class="hidden">
-                <!-- Condition -->
-                <div class="form-group">
-                    <label for="itemCondition">Condition</label>
-                    <select id="itemCondition" class="form-control">
-                        <option value="">-- Select Condition --</option>
-                        <option value="NEW">New</option>
-                        <option value="NEW_OTHER">New (Other)</option>
-                        <option value="NEW_WITH_DEFECTS">New with defects</option>
-                        <option value="LIKE_NEW">Like New</option>
-                        <option value="USED_EXCELLENT">Used - Excellent</option>
-                        <option value="USED_VERY_GOOD">Used - Very Good</option>
-                        <option value="USED_GOOD">Used - Good</option>
-                        <option value="USED_ACCEPTABLE">Used - Acceptable</option>
-                        <option value="FOR_PARTS_OR_NOT_WORKING">For parts or not working</option>
-                    </select>
-                </div>
-
-                <!-- Category Search -->
-                <div class="form-group">
-                    <label for="categorySearch">eBay Category</label>
-                    <div class="category-search-container">
-                        <input type="text" id="categorySearch" placeholder="Search for a category (e.g., 'vintage watches', 'men's shirts')">
-                        <button type="button" class="btn btn-secondary" onclick="Advanced.searchCategories()">Search</button>
-                    </div>
-                    <div id="categoryResults" class="category-results hidden"></div>
-                    <div id="selectedCategory" class="selected-category hidden">
-                        <span class="category-label">Selected:</span>
-                        <span class="category-name"></span>
-                        <button type="button" class="btn btn-sm btn-secondary" onclick="Advanced.clearCategory()">Change</button>
-                    </div>
-                </div>
-
-                <!-- Item Specifics -->
-                <div id="itemSpecificsSection" class="hidden">
-                    <h3>Item Specifics</h3>
-                    <p class="hint">Required fields are marked with *</p>
-                    <div id="itemSpecificsContainer">
-                        <!-- Dynamically filled with item specifics based on category -->
-                    </div>
-                </div>
-
-                <!-- Save Button -->
-                <div class="form-actions" style="margin-top: 20px;">
-                    <button type="button" class="btn btn-primary" onclick="Advanced.saveSettings()">Save Advanced Settings</button>
-                </div>
-            </div>
-        </section>
 
         <!-- eBay Sync Tab - Hidden for development -->
-        <section id="ebay" class="tab-content" style="display:none">
+        <section id="ebay" class="tab-content">
             <h2>eBay Integration</h2>
 
             <!-- Status Message -->
@@ -272,18 +226,23 @@
 
                 <div id="ebayInventory" class="ebay-inventory hidden">
                     <h3>eBay Inventory</h3>
+                    <p class="ebay-inventory-hint">Items synced to your eBay account</p>
                     <div class="table-container">
                         <table id="ebayInventoryTable">
                             <thead>
                                 <tr>
                                     <th>SKU</th>
                                     <th>Title</th>
-                                    <th>Quantity</th>
+                                    <th>Qty</th>
                                     <th>Condition</th>
+                                    <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody></tbody>
                         </table>
+                    </div>
+                    <div class="ebay-links">
+                        <a href="https://sandbox.ebay.com/sh/lst/active" target="_blank" class="btn btn-secondary">Open eBay Seller Hub</a>
                     </div>
                 </div>
             </div>
@@ -333,6 +292,68 @@
             </div>
             <div id="historyContent" class="modal-body">
                 <!-- History content loaded dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Item Details Modal -->
+    <div id="advancedModal" class="modal hidden">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2>Item Details</h2>
+                <button class="modal-close" onclick="closeAdvancedModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Item Info -->
+                <div id="advancedItemInfo" class="advanced-item-info">
+                    <span class="advanced-sku"></span>
+                    <span class="advanced-desc"></span>
+                </div>
+
+                <!-- Condition -->
+                <div class="form-group">
+                    <label for="itemCondition">Condition</label>
+                    <select id="itemCondition" class="form-control">
+                        <option value="">-- Select Condition --</option>
+                        <option value="NEW">New</option>
+                        <option value="NEW_OTHER">New (Other)</option>
+                        <option value="NEW_WITH_DEFECTS">New with defects</option>
+                        <option value="LIKE_NEW">Like New</option>
+                        <option value="USED_EXCELLENT">Used - Excellent</option>
+                        <option value="USED_VERY_GOOD">Used - Very Good</option>
+                        <option value="USED_GOOD">Used - Good</option>
+                        <option value="USED_ACCEPTABLE">Used - Acceptable</option>
+                        <option value="FOR_PARTS_OR_NOT_WORKING">For parts or not working</option>
+                    </select>
+                </div>
+
+                <!-- Category Search -->
+                <div class="form-group">
+                    <label>eBay Category</label>
+                    <div class="category-search-container">
+                        <input type="text" id="categorySearch" placeholder="Search for a category (e.g., 'vintage watches')">
+                        <button type="button" class="btn btn-secondary" onclick="Advanced.searchCategories()">Search</button>
+                    </div>
+                    <div id="categoryResults" class="category-results hidden"></div>
+                    <div id="selectedCategory" class="selected-category hidden">
+                        <span class="category-label">Selected:</span>
+                        <span class="category-name"></span>
+                        <button type="button" class="btn btn-sm" onclick="Advanced.clearCategory()">Change</button>
+                    </div>
+                </div>
+
+                <!-- Item Specifics -->
+                <div id="itemSpecificsSection" class="hidden">
+                    <h3>Item Specifics</h3>
+                    <p class="hint">Required fields are marked with *</p>
+                    <div id="itemSpecificsContainer"></div>
+                </div>
+
+                <!-- Save Button -->
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeAdvancedModal()">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="Advanced.saveSettings()">Save Settings</button>
+                </div>
             </div>
         </div>
     </div>
