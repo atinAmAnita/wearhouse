@@ -779,6 +779,58 @@ app.get('/api/export/ebay', async (req, res) => {
     res.send(csv);
 });
 
+// Debug: Pull listings directly from eBay and export to Excel
+app.get('/api/debug/ebay-export/:accountId', async (req, res) => {
+    try {
+        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
+            return res.status(401).json({ error: 'eBay account not connected or token expired' });
+        }
+
+        // Pull inventory directly from eBay
+        const ebayData = await ebayAPI.getInventoryItems(req.params.accountId);
+
+        if (!ebayData.inventoryItems || ebayData.inventoryItems.length === 0) {
+            return res.status(404).json({ error: 'No items found on eBay' });
+        }
+
+        // Format for Excel
+        const excelData = ebayData.inventoryItems.map(item => ({
+            'SKU': item.sku,
+            'Title': item.product?.title || '',
+            'Quantity': item.availability?.shipToLocationAvailability?.quantity || 0,
+            'Condition': item.condition || '',
+            'Description': item.product?.description || '',
+            'Warehouse Location': item.product?.aspects?.['Warehouse Location']?.[0] || ''
+        }));
+
+        // Create Excel workbook
+        const workbook = XLSX.utils.book_new();
+        const worksheet = XLSX.utils.json_to_sheet(excelData);
+
+        // Set column widths
+        worksheet['!cols'] = [
+            { wch: 15 }, // SKU
+            { wch: 40 }, // Title
+            { wch: 10 }, // Quantity
+            { wch: 12 }, // Condition
+            { wch: 50 }, // Description
+            { wch: 20 }  // Location
+        ];
+
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'eBay Inventory');
+
+        // Generate buffer
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=ebay_inventory_${new Date().toISOString().split('T')[0]}.xlsx`);
+        res.send(buffer);
+
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Full database export (JSON with all nested data)
 app.get('/api/export/full', async (req, res) => {
     try {

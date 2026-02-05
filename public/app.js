@@ -1195,6 +1195,15 @@ const closeAdvancedModal = () => Advanced.closeModal();
 const syncAllToEbay = () => eBay.syncAll();
 const publishAllToEbay = () => eBay.publishAll();
 const loadEbayInventory = () => eBay.loadInventory();
+const exportEbayToExcel = () => {
+    const accountId = eBay.getSelectedAccount();
+    if (!accountId) {
+        UI.notify('Please select an eBay account first', 'error');
+        return;
+    }
+    UI.notify('Downloading eBay inventory...', 'info');
+    window.location.href = `/api/debug/ebay-export/${accountId}`;
+};
 const printBarcode = () => window.print();
 const getAdjustQty = () => parseInt(UI.el('adjustQtyInput')?.value) || 1;
 
