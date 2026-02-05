@@ -546,6 +546,20 @@ td {
     border: 1px solid var(--border-color);
     text-align: center;
     transition: all 0.2s ease;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-height: 200px;
+}
+
+.backup-button-container {
+    text-align: center;
+    margin-top: 25px;
+}
+
+.btn-large {
+    padding: 15px 40px;
+    font-size: 1rem;
 }
 
 .export-card:hover {
@@ -564,13 +578,7 @@ td {
     color: var(--text-muted);
     margin-bottom: 25px;
     font-size: 0.95rem;
-}
-
-.export-card-full {
-    width: 100%;
-    max-width: 625px;
-    background: linear-gradient(135deg, var(--bg-card) 0%, rgba(0, 255, 136, 0.05) 100%);
-    border-color: var(--accent-primary);
+    flex-grow: 1;
 }
 
 .btn-success {
