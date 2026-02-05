@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>STOCKFORGE - Inventory Control</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>STOCKFORGE</h1>
+            <p class="subtitle">Inventory Control System</p>
+            <a href="/admin" class="admin-link">Admin Panel</a>
+        </header>
+
+        <nav class="tabs">
+            <button class="tab-btn active" data-tab="add">Add Item</button>
+            <button class="tab-btn" data-tab="lookup">Scan/Lookup</button>
+            <button class="tab-btn" data-tab="inventory">Inventory</button>
+            <button class="tab-btn" data-tab="ebay">eBay Sync</button>
+            <button class="tab-btn" data-tab="export">Export</button>
+        </nav>
+
+        <!-- Add Item Tab -->
+        <section id="add" class="tab-content active">
+            <h2>Add Item</h2>
+            <form id="addItemForm">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="itemId">Item ID (4 digits)</label>
+                        <div class="input-with-btn">
+                            <input type="text" id="itemId" maxlength="4" pattern="[0-9]{4}" required placeholder="e.g., 1234">
+                            <button type="button" class="btn btn-generate" onclick="generateNextItemId()">Auto</button>
+                        </div>
+                        <small class="field-hint">Unique product identifier</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="location">Location (5 digits: 3+2)</label>
+                        <div class="input-with-btn">
+                            <input type="text" id="location" maxlength="5" pattern="[0-9]{5}" required placeholder="e.g., 00101">
+                            <button type="button" class="btn btn-generate" onclick="generateNextLocation()">Auto</button>
+                        </div>
+                        <small class="field-hint">Drawer (001-999) + Position (01-99)</small>
+                    </div>
+                </div>
+
+                <!-- SKU Preview -->
+                <div class="sku-preview">
+                    <label>Generated SKU:</label>
+                    <span id="skuPreview">----+-----</span>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="price">Price</label>
+                        <input type="number" id="price" min="0" step="0.01" placeholder="0.00" required>
+                        <small class="field-hint">Selling price</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="quantity">Quantity</label>
+                        <input type="number" id="quantity" min="1" value="1" required>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="description">Description (optional)</label>
+                        <input type="text" id="description" placeholder="Item description">
+                    </div>
+                </div>
+
+                <div id="itemStatus" class="location-status"></div>
+                <div class="form-actions">
+                    <button type="submit" id="submitBtn" class="btn btn-primary">Add Item</button>
+                    <button type="button" class="btn btn-secondary" onclick="openAdvancedModal('add')">Item Details</button>
+                </div>
+            </form>
+
+            <div id="addResult" class="result-panel hidden">
+                <h3>Item Added Successfully!</h3>
+                <div class="item-details"></div>
+                <div class="barcode-container">
+                    <img id="barcodeImage" alt="Barcode">
+                    <button class="btn btn-secondary" onclick="printBarcode()">Print Barcode</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Lookup Tab -->
+        <section id="lookup" class="tab-content">
+            <h2>Scan or Lookup Item</h2>
+            <form id="lookupForm">
+                <div class="form-group">
+                    <label for="skuInput">Enter or Scan SKU</label>
+                    <input type="text" id="skuInput" placeholder="Scan barcode or enter SKU" autofocus>
+                </div>
+                <button type="submit" class="btn btn-primary">Lookup</button>
+            </form>
+
+            <div id="lookupResult" class="result-panel hidden">
+                <h3>Item Found</h3>
+                <div class="item-details"></div>
+
+                <!-- Item Details (Category, Condition, etc.) -->
+                <div id="lookupItemDetails" class="item-extra-details">
+                    <div class="detail-row">
+                        <span class="detail-label">Category:</span>
+                        <span id="lookupCategory" class="detail-value">Not set</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Condition:</span>
+                        <span id="lookupCondition" class="detail-value">Not set</span>
+                    </div>
+                </div>
+
+                <div class="barcode-container">
+                    <img id="lookupBarcodeImage" alt="Barcode">
+                </div>
+
+                <div class="action-buttons">
+                    <div class="action-row">
+                        <div class="qty-adjust">
+                            <button class="btn btn-secondary" onclick="adjustQuantity(-getAdjustQty())">-</button>
+                            <input type="number" id="adjustQtyInput" value="1" min="1" class="qty-input">
+                            <button class="btn btn-success" onclick="adjustQuantity(getAdjustQty())">+</button>
+                        </div>
+                        <div class="price-adjust">
+                            <span class="price-label">$</span>
+                            <input type="number" id="adjustPriceInput" min="0" step="0.01" class="price-input" placeholder="0.00">
+                            <button class="btn btn-primary" onclick="updatePrice()">Update</button>
+                        </div>
+                    </div>
+                    <div class="action-row">
+                        <button class="btn btn-secondary" onclick="openAdvancedModal('lookup')">Edit Details</button>
+                        <button class="btn btn-danger" onclick="deleteCurrentItem()">Delete Item</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Inventory Tab -->
+        <section id="inventory" class="tab-content">
+            <h2>Full Inventory</h2>
+            <div class="inventory-controls">
+                <input type="text" id="searchInventory" placeholder="Search inventory...">
+                <button class="btn btn-secondary" onclick="loadInventory()">Refresh</button>
+            </div>
+            <div class="table-container">
+                <table id="inventoryTable">
+                    <thead>
+                        <tr>
+                            <th>SKU</th>
+                            <th>Location</th>
+                            <th>Price</th>
+                            <th>Quantity</th>
+                            <th>Description</th>
+                            <th>Date Added</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <div class="inventory-stats">
+                <span id="totalItems">Total: 0 items</span>
+                <span id="totalQuantity">Total quantity: 0</span>
+            </div>
+        </section>
+
+
+        <!-- eBay Sync Tab - Hidden for development -->
+        <section id="ebay" class="tab-content">
+            <h2>eBay Integration</h2>
+
+            <!-- Status Message -->
+            <div id="ebayStatus" class="ebay-status">
+                <div class="status-card not-configured">
+                    <div class="status-icon">?</div>
+                    <div class="status-info">
+                        <h3>Checking eBay status...</h3>
+                        <p>Please wait</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Not Configured Message -->
+            <div id="ebayNotConfigured" class="ebay-setup hidden">
+                <h3>eBay API Not Configured</h3>
+                <p>Contact your administrator to configure the eBay API credentials.</p>
+                <p>Admin panel: <a href="/admin">/admin</a></p>
+            </div>
+
+            <!-- No Accounts Message -->
+            <div id="ebayNoAccounts" class="ebay-connect hidden">
+                <p>No eBay accounts connected yet.</p>
+                <p>Contact your administrator to connect eBay seller accounts.</p>
+                <p>Admin panel: <a href="/admin">/admin</a></p>
+            </div>
+
+            <!-- Account Selection & Sync (shown when accounts exist) -->
+            <div id="ebayControls" class="ebay-controls hidden">
+                <!-- Account Selector -->
+                <div class="form-group" style="max-width: 400px; margin: 0 auto 20px;">
+                    <label for="accountSelect">Select eBay Account</label>
+                    <select id="accountSelect" class="form-control" style="width: 100%; padding: 12px; border: 2px solid #e9ecef; border-radius: 8px; font-size: 1rem;">
+                        <option value="">-- Select Account --</option>
+                    </select>
+                </div>
+
+                <div class="sync-actions">
+                    <button class="btn btn-secondary" onclick="syncAllToEbay()">Sync Inventory</button>
+                    <button class="btn btn-primary btn-large" onclick="publishAllToEbay()">Publish All Listings</button>
+                    <button class="btn btn-secondary" onclick="loadEbayInventory()">View eBay Inventory</button>
+                </div>
+                <p style="text-align: center; color: var(--text-muted); font-size: 0.85rem; margin-top: 10px;">
+                    <strong>Sync</strong> = Update eBay inventory data | <strong>Publish</strong> = Create visible listings
+                </p>
+
+                <!-- Connected Accounts List -->
+                <div id="accountsList" style="margin-top: 30px;">
+                    <h3 style="margin-bottom: 15px;">Connected eBay Accounts</h3>
+                    <div id="accountsContainer"></div>
+                </div>
+
+                <div id="syncResults" class="sync-results hidden">
+                    <h3>Sync Results</h3>
+                    <div class="sync-summary"></div>
+                </div>
+
+                <div id="ebayInventory" class="ebay-inventory hidden">
+                    <h3>eBay Inventory</h3>
+                    <p class="ebay-inventory-hint">Items synced to your eBay account</p>
+                    <div class="table-container">
+                        <table id="ebayInventoryTable">
+                            <thead>
+                                <tr>
+                                    <th>SKU</th>
+                                    <th>Title</th>
+                                    <th>Qty</th>
+                                    <th>Condition</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <div class="ebay-links">
+                        <a href="https://sandbox.ebay.com/sh/lst/active" target="_blank" class="btn btn-secondary">Open eBay Seller Hub</a>
+                        <button class="btn btn-primary" onclick="exportEbayToExcel()">Export to Excel</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Export Tab -->
+        <section id="export" class="tab-content">
+            <h2>Export Data</h2>
+            <div class="export-options export-top-row">
+                <div class="export-card">
+                    <h3>eBay File Exchange</h3>
+                    <p>Export inventory in eBay's File Exchange CSV format for bulk updates.</p>
+                    <a href="/api/export/ebay" class="btn btn-primary" download>Download eBay CSV</a>
+                </div>
+                <div class="export-card">
+                    <h3>Excel Spreadsheet</h3>
+                    <p>Export full inventory data as an Excel file.</p>
+                    <a href="/api/export/excel" class="btn btn-primary" download>Download Excel</a>
+                </div>
+            </div>
+            <div class="export-options">
+                <div class="export-card export-card-backup">
+                    <h3>Full Database Backup</h3>
+                    <p>Export complete database with all history, categories, and item specifics.</p>
+                    <a href="/api/export/full" class="btn btn-success" download>Download Full Backup (JSON)</a>
+                </div>
+            </div>
+
+            <h2 style="margin-top: 2rem;">Import Data</h2>
+            <div class="export-options">
+                <div class="export-card export-card-backup">
+                    <h3>Restore from Backup</h3>
+                    <p>Import a full database backup (JSON). This will add new items and update existing ones.</p>
+                    <input type="file" id="backupFileInput" accept=".json" style="display: none;" onchange="importFullBackup(this)">
+                    <button class="btn btn-warning" onclick="document.getElementById('backupFileInput').click()">Upload Backup (JSON)</button>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- History Modal -->
+    <div id="historyModal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Item History</h2>
+                <button class="modal-close" onclick="closeHistoryModal()">&times;</button>
+            </div>
+            <div id="historyContent" class="modal-body">
+                <!-- History content loaded dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Item Details Modal -->
+    <div id="advancedModal" class="modal hidden">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2>Item Details</h2>
+                <button class="modal-close" onclick="closeAdvancedModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Item Info -->
+                <div id="advancedItemInfo" class="advanced-item-info">
+                    <span class="advanced-sku"></span>
+                    <span class="advanced-desc"></span>
+                </div>
+
+                <!-- Condition -->
+                <div class="form-group">
+                    <label for="itemCondition">Condition</label>
+                    <select id="itemCondition" class="form-control">
+                        <option value="">-- Select Condition --</option>
+                        <option value="NEW">New</option>
+                        <option value="NEW_OTHER">New (Other)</option>
+                        <option value="NEW_WITH_DEFECTS">New with defects</option>
+                        <option value="LIKE_NEW">Like New</option>
+                        <option value="USED_EXCELLENT">Used - Excellent</option>
+                        <option value="USED_VERY_GOOD">Used - Very Good</option>
+                        <option value="USED_GOOD">Used - Good</option>
+                        <option value="USED_ACCEPTABLE">Used - Acceptable</option>
+                        <option value="FOR_PARTS_OR_NOT_WORKING">For parts or not working</option>
+                    </select>
+                </div>
+
+                <!-- Category Search -->
+                <div class="form-group">
+                    <label>eBay Category</label>
+                    <div class="category-search-container">
+                        <input type="text" id="categorySearch" placeholder="Search for a category (e.g., 'vintage watches')">
+                        <button type="button" class="btn btn-secondary" onclick="Advanced.searchCategories()">Search</button>
+                    </div>
+                    <div id="categoryResults" class="category-results hidden"></div>
+                    <div id="selectedCategory" class="selected-category hidden">
+                        <span class="category-label">Selected:</span>
+                        <span class="category-name"></span>
+                        <button type="button" class="btn btn-sm" onclick="Advanced.clearCategory()">Change</button>
+                    </div>
+                </div>
+
+                <!-- Item Specifics -->
+                <div id="itemSpecificsSection" class="hidden">
+                    <h3>Item Specifics</h3>
+                    <p class="hint">Required fields are marked with *</p>
+                    <div id="itemSpecificsContainer"></div>
+                </div>
+
+                <!-- Save Button -->
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeAdvancedModal()">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="Advanced.saveSettings()">Save Settings</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="notification" class="notification hidden"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>

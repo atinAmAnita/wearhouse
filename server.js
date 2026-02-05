@@ -1087,6 +1087,9 @@ app.post('/api/ebay/publish-all/:accountId', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Main app
+app.get('/app', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'app.html')); });
+
 // Debug page
 app.get('/debug', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'debug.html')); });
 
