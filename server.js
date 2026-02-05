@@ -253,7 +253,7 @@ const config = {
             'https://api.ebay.com/oauth/api_scope/sell.account'
         ]
     },
-    adminPassword: process.env.ADMIN_PASSWORD || 'admin123',
+    adminPassword: (process.env.ADMIN_PASSWORD || 'admin123').trim(),
     isEbayConfigured() {
         return !!(this.ebay.clientId && this.ebay.clientSecret && this.ebay.ruName);
     }
