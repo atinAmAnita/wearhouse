@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - STOCKFORGE</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .admin-header {
+            background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 50%, #1a1a1a 100%);
+            border-bottom: 3px solid #ff1744;
+        }
+
+        .admin-header::before {
+            background: linear-gradient(90deg, transparent, #ff1744, transparent);
+        }
+
+        .admin-header h1 {
+            color: #ff1744;
+        }
+
+        .login-container {
+            max-width: 400px;
+            margin: 50px auto;
+            padding: 30px;
+            background: var(--bg-panel);
+            border: 1px solid var(--border-color);
+        }
+
+        .login-container h2 {
+            text-align: center;
+            margin-bottom: 25px;
+            color: var(--text-primary);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .admin-content {
+            display: none;
+        }
+
+        .admin-content.visible {
+            display: block;
+        }
+
+        .account-card {
+            background: var(--bg-card);
+            padding: 25px;
+            margin-bottom: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border: 1px solid var(--border-color);
+            border-left: 4px solid var(--accent-primary);
+        }
+
+        .account-info h4 {
+            margin: 0 0 8px 0;
+            color: var(--text-primary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .account-info p {
+            margin: 5px 0;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        .account-status {
+            display: inline-block;
+            padding: 5px 12px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 10px;
+        }
+
+        .account-status.active {
+            background: rgba(0, 200, 83, 0.2);
+            color: var(--success);
+            border: 1px solid var(--success);
+        }
+
+        .account-status.expired {
+            background: rgba(255, 23, 68, 0.2);
+            color: var(--danger);
+            border: 1px solid var(--danger);
+        }
+
+        .add-account-form {
+            background: var(--bg-card);
+            padding: 25px;
+            margin-bottom: 25px;
+            border: 1px solid var(--border-color);
+            border-top: 3px solid var(--accent-primary);
+        }
+
+        .add-account-form h3 {
+            margin-top: 0;
+            margin-bottom: 20px;
+            color: var(--accent-primary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .config-section {
+            background: rgba(255, 171, 0, 0.1);
+            border: 1px solid var(--border-color);
+            border-left: 4px solid var(--warning);
+            padding: 25px;
+            margin-bottom: 25px;
+        }
+
+        .config-section h3 {
+            color: var(--warning);
+            margin-top: 0;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .config-section p {
+            color: var(--text-secondary);
+        }
+
+        .config-section code {
+            background: var(--bg-dark);
+            color: var(--accent-primary);
+            padding: 3px 8px;
+            font-size: 0.9rem;
+            font-family: 'Consolas', monospace;
+        }
+
+        .config-section a {
+            color: var(--accent-primary);
+        }
+
+        .config-success {
+            background: rgba(0, 200, 83, 0.1);
+            border: 1px solid var(--border-color);
+            border-left: 4px solid var(--success);
+            padding: 20px;
+            margin-bottom: 25px;
+            color: var(--success);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .back-link {
+            display: inline-block;
+            margin-bottom: 25px;
+            color: var(--accent-primary);
+            text-decoration: none;
+            text-transform: uppercase;
+            font-size: 0.9rem;
+            letter-spacing: 1px;
+        }
+
+        .back-link:hover {
+            text-decoration: underline;
+        }
+
+        .no-accounts {
+            text-align: center;
+            padding: 50px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .section-title {
+            margin-bottom: 20px;
+            color: var(--text-primary);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--border-color);
+            position: relative;
+        }
+
+        .section-title::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            width: 60px;
+            height: 2px;
+            background: var(--accent-primary);
+        }
+
+        .hint-text {
+            margin-top: 12px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .password-hint {
+            text-align: center;
+            margin-top: 20px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .password-hint code {
+            background: var(--bg-dark);
+            color: var(--accent-primary);
+            padding: 3px 8px;
+            font-family: 'Consolas', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="admin-header">
+            <h1>ADMIN PANEL</h1>
+            <p class="subtitle">STOCKFORGE Control Center</p>
+        </header>
+
+        <!-- Login Form -->
+        <div id="loginSection" class="login-container">
+            <h2>Admin Login</h2>
+            <form id="loginForm">
+                <div class="form-group">
+                    <label for="adminPassword">Password</label>
+                    <input type="password" id="adminPassword" placeholder="Enter admin password" required>
+                </div>
+                <button type="submit" class="btn btn-primary" style="width: 100%;">Login</button>
+            </form>
+            <p class="password-hint">
+                Default password: <code>admin123</code><br>
+                Change it in config.js
+            </p>
+        </div>
+
+        <!-- Admin Content (hidden until login) -->
+        <div id="adminContent" class="admin-content">
+            <a href="/" class="back-link">&larr; Back to Main App</a>
+
+            <!-- eBay API Config Status -->
+            <div id="configStatus"></div>
+
+            <!-- Add Account Form -->
+            <div id="addAccountSection" class="add-account-form">
+                <h3>Connect New eBay Account</h3>
+                <div class="form-group">
+                    <label for="accountName">Account Name (for your reference)</label>
+                    <input type="text" id="accountName" placeholder="e.g., John's Store, Main Account">
+                </div>
+                <button class="btn btn-primary" onclick="connectNewAccount()">Connect eBay Account</button>
+                <p class="hint-text">
+                    You'll be redirected to eBay to authorize access.
+                </p>
+            </div>
+
+            <!-- Connected Accounts List -->
+            <h2 class="section-title">Connected eBay Accounts</h2>
+            <div id="accountsList">
+                <div class="no-accounts">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="notification" class="notification hidden"></div>
+
+    <script>
+        let adminPassword = '';
+
+        // Show notification
+        function showNotification(message, type = 'info') {
+            const notification = document.getElementById('notification');
+            notification.textContent = message;
+            notification.className = `notification ${type}`;
+            setTimeout(() => notification.classList.add('hidden'), 3000);
+        }
+
+        // Check URL params for OAuth callback results
+        function checkUrlParams() {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('ebay_connected')) {
+                showNotification(`Successfully connected: ${params.get('ebay_connected')}`, 'success');
+                window.history.replaceState({}, '', '/admin');
+            } else if (params.get('ebay_error')) {
+                showNotification('eBay error: ' + params.get('ebay_error'), 'error');
+                window.history.replaceState({}, '', '/admin');
+            }
+        }
+
+        // Login form
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            adminPassword = document.getElementById('adminPassword').value;
+
+            try {
+                const response = await fetch('/api/admin/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: adminPassword })
+                });
+
+                if (response.ok) {
+                    document.getElementById('loginSection').style.display = 'none';
+                    document.getElementById('adminContent').classList.add('visible');
+                    loadAdminData();
+                } else {
+                    showNotification('Invalid password', 'error');
+                }
+            } catch (err) {
+                showNotification('Login error: ' + err.message, 'error');
+            }
+        });
+
+        // Load admin data
+        async function loadAdminData() {
+            // Check eBay config status
+            const statusResponse = await fetch('/api/ebay/status');
+            const status = await statusResponse.json();
+
+            const configDiv = document.getElementById('configStatus');
+            if (!status.configured) {
+                configDiv.innerHTML = `
+                    <div class="config-section">
+                        <h3>eBay API Not Configured</h3>
+                        <p>Add your eBay Developer credentials to <code>config.js</code>:</p>
+                        <pre class="code-block">
+clientId: 'your-client-id',
+clientSecret: 'your-client-secret',
+ruName: 'your-runame'</pre>
+                        <p style="margin-top: 15px;">Get credentials from <a href="https://developer.ebay.com/my/keys" target="_blank">developer.ebay.com</a></p>
+                    </div>
+                `;
+                document.getElementById('addAccountSection').style.display = 'none';
+            } else {
+                configDiv.innerHTML = `
+                    <div class="config-success">
+                        eBay API Configured - Environment: ${status.environment}
+                    </div>
+                `;
+            }
+
+            // Load accounts
+            loadAccounts();
+        }
+
+        // Load connected accounts
+        async function loadAccounts() {
+            try {
+                const response = await fetch('/api/admin/ebay/accounts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: adminPassword })
+                });
+
+                const accounts = await response.json();
+                const listDiv = document.getElementById('accountsList');
+
+                if (accounts.length === 0) {
+                    listDiv.innerHTML = '<div class="no-accounts">No eBay accounts connected yet.</div>';
+                    return;
+                }
+
+                listDiv.innerHTML = accounts.map(account => {
+                    const isActive = account.hasValidToken &&
+                        (!account.tokenExpires || new Date(account.tokenExpires) > new Date());
+
+                    return `
+                        <div class="account-card">
+                            <div class="account-info">
+                                <h4>${account.name}</h4>
+                                <p>ID: ${account.id}</p>
+                                <p>Added: ${new Date(account.addedAt).toLocaleDateString()}</p>
+                                ${account.lastSync ? `<p>Last sync: ${new Date(account.lastSync).toLocaleString()}</p>` : ''}
+                                <span class="account-status ${isActive ? 'active' : 'expired'}">
+                                    ${isActive ? 'Active' : 'Token Expired'}
+                                </span>
+                            </div>
+                            <button class="btn btn-danger" onclick="removeAccount('${account.id}')">Remove</button>
+                        </div>
+                    `;
+                }).join('');
+
+            } catch (err) {
+                showNotification('Error loading accounts: ' + err.message, 'error');
+            }
+        }
+
+        // Connect new eBay account
+        async function connectNewAccount() {
+            const accountName = document.getElementById('accountName').value.trim();
+
+            if (!accountName) {
+                showNotification('Please enter an account name', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/admin/ebay/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: adminPassword, accountName })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    // Redirect to eBay auth
+                    window.location.href = data.authUrl;
+                } else {
+                    showNotification(data.error, 'error');
+                }
+            } catch (err) {
+                showNotification('Error: ' + err.message, 'error');
+            }
+        }
+
+        // Remove account
+        async function removeAccount(accountId) {
+            if (!confirm('Are you sure you want to remove this eBay account?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/admin/ebay/account/${accountId}`, {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: adminPassword })
+                });
+
+                if (response.ok) {
+                    showNotification('Account removed', 'success');
+                    loadAccounts();
+                } else {
+                    const data = await response.json();
+                    showNotification(data.error, 'error');
+                }
+            } catch (err) {
+                showNotification('Error: ' + err.message, 'error');
+            }
+        }
+
+        // On page load
+        checkUrlParams();
+    </script>
+</body>
+</html>
