@@ -151,8 +151,9 @@
                 <option value="">-- Loading accounts --</option>
             </select>
 
-            <button onclick="viewInventory()">View eBay Inventory</button>
-            <button onclick="exportToExcel()" class="secondary">Export to Excel</button>
+            <button onclick="pullFromEbay()" id="pullBtn">1. Pull Data from eBay</button>
+            <button onclick="downloadExcel()" id="downloadBtn" class="secondary" disabled>2. Download Excel File</button>
+            <p id="pullStatus" style="color: #888; font-size: 0.9rem; text-align: center; margin-top: 10px;"></p>
         </div>
 
         <div id="results" class="results">
@@ -239,15 +240,24 @@
             return document.getElementById('accountSelect').value;
         }
 
-        // View inventory
-        async function viewInventory() {
+        let pulledData = null;
+
+        // Step 1: Pull from eBay
+        async function pullFromEbay() {
             const accountId = getAccountId();
             if (!accountId) {
                 notify('Please select an account first', 'error');
                 return;
             }
 
-            notify('Loading inventory...');
+            const pullBtn = document.getElementById('pullBtn');
+            const downloadBtn = document.getElementById('downloadBtn');
+            const statusEl = document.getElementById('pullStatus');
+
+            pullBtn.disabled = true;
+            pullBtn.textContent = 'Pulling data...';
+            statusEl.textContent = 'Connecting to eBay...';
+            downloadBtn.disabled = true;
 
             try {
                 const res = await fetch(`/api/ebay/inventory/${accountId}`);
@@ -255,11 +265,11 @@
 
                 if (data.error) throw new Error(data.error);
 
-                const items = data.inventoryItems || [];
-                document.getElementById('itemCount').textContent = items.length;
+                pulledData = data.inventoryItems || [];
+                document.getElementById('itemCount').textContent = pulledData.length;
 
                 const tbody = document.getElementById('inventoryTable');
-                tbody.innerHTML = items.map(item => `
+                tbody.innerHTML = pulledData.map(item => `
                     <tr>
                         <td>${item.sku}</td>
                         <td>${item.product?.title || '-'}</td>
@@ -268,22 +278,34 @@
                 `).join('') || '<tr><td colspan="3">No items found</td></tr>';
 
                 document.getElementById('results').classList.add('show');
-                notify('Loaded ' + items.length + ' items', 'success');
+
+                statusEl.innerHTML = `<span style="color: #22c55e;">&#10003; Pulled ${pulledData.length} items from eBay. Ready to download.</span>`;
+                downloadBtn.disabled = false;
+                notify('Data pulled successfully!', 'success');
 
             } catch (err) {
+                statusEl.innerHTML = `<span style="color: #ef4444;">&#10007; Error: ${err.message}</span>`;
                 notify('Error: ' + err.message, 'error');
+            } finally {
+                pullBtn.disabled = false;
+                pullBtn.textContent = '1. Pull Data from eBay';
             }
         }
 
-        // Export to Excel
-        function exportToExcel() {
+        // Step 2: Download Excel
+        function downloadExcel() {
             const accountId = getAccountId();
             if (!accountId) {
                 notify('Please select an account first', 'error');
                 return;
             }
 
-            notify('Downloading Excel file...');
+            if (!pulledData || pulledData.length === 0) {
+                notify('Please pull data first', 'error');
+                return;
+            }
+
+            notify('Downloading Excel file...', 'success');
             window.location.href = `/api/debug/ebay-export/${accountId}`;
         }
 
