@@ -209,9 +209,13 @@
                 </div>
 
                 <div class="sync-actions">
-                    <button class="btn btn-primary btn-large" onclick="syncAllToEbay()">Sync All Items to Selected Account</button>
+                    <button class="btn btn-secondary" onclick="syncAllToEbay()">Sync Inventory</button>
+                    <button class="btn btn-primary btn-large" onclick="publishAllToEbay()">Publish All Listings</button>
                     <button class="btn btn-secondary" onclick="loadEbayInventory()">View eBay Inventory</button>
                 </div>
+                <p style="text-align: center; color: var(--text-muted); font-size: 0.85rem; margin-top: 10px;">
+                    <strong>Sync</strong> = Update eBay inventory data | <strong>Publish</strong> = Create visible listings
+                </p>
 
                 <!-- Connected Accounts List -->
                 <div id="accountsList" style="margin-top: 30px;">

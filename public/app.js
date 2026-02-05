@@ -70,6 +70,8 @@ const API = {
         getStatus: () => API.get('/api/ebay/status'),
         getInventory: (accountId) => API.get(`/api/ebay/inventory/${accountId}`),
         syncAll: (accountId) => API.post(`/api/ebay/sync-all/${accountId}`),
+        publishAll: (accountId) => API.post(`/api/ebay/publish-all/${accountId}`),
+        getPolicies: (accountId) => API.get(`/api/ebay/policies/${accountId}`),
         searchCategories: (accountId, query) => API.get(`/api/ebay/categories/search/${accountId}?q=${encodeURIComponent(query)}`),
         getCategoryAspects: (accountId, categoryId) => API.get(`/api/ebay/categories/${categoryId}/aspects/${accountId}`),
     },
@@ -1088,6 +1090,52 @@ const eBay = {
         }
     },
 
+    async publishAll() {
+        const accountId = eBay.getSelectedAccount();
+        if (!accountId) {
+            UI.notify('Please select an eBay account first', 'error');
+            return;
+        }
+
+        const account = State.ebayAccounts.find(a => a.id === accountId);
+        if (!UI.confirm(`Publish all items as eBay listings to "${account?.name}"?\n\nThis will create actual visible listings on eBay.`)) return;
+
+        UI.notify('Publishing listings to eBay...', 'info');
+
+        try {
+            const data = await API.ebay.publishAll(accountId);
+
+            const resultsDiv = UI.el('syncResults');
+            UI.show(resultsDiv);
+
+            let html = `
+                <p><strong>Account:</strong> ${account?.name}</p>
+                <p><strong style="color: var(--success);">Published:</strong> ${data.results.published.length} listings</p>
+            `;
+
+            if (data.results.published.length > 0) {
+                html += `<ul style="color: var(--success);">${data.results.published.map(p =>
+                    `<li>${p.sku}: ${p.existing ? 'Already listed' : `Listed (ID: ${p.listingId})`}</li>`
+                ).join('')}</ul>`;
+            }
+
+            if (data.results.failed.length > 0) {
+                html += `
+                    <p><strong style="color: var(--danger);">Failed:</strong> ${data.results.failed.length} items</p>
+                    <ul style="color: var(--danger);">${data.results.failed.map(f => `<li>${f.sku}: ${f.error}</li>`).join('')}</ul>
+                `;
+            }
+
+            UI.setHTML(resultsDiv.querySelector('.sync-summary'), html);
+            UI.notify(data.message, data.results.failed.length ? 'info' : 'success');
+            eBay.loadStatus();
+            eBay.loadInventory();
+
+        } catch (err) {
+            UI.notify(err.message, 'error');
+        }
+    },
+
     async loadInventory() {
         const accountId = eBay.getSelectedAccount();
         if (!accountId) {
@@ -1145,6 +1193,7 @@ const closeHistoryModal = () => History.close();
 const openAdvancedModal = (context) => Advanced.openModal(context);
 const closeAdvancedModal = () => Advanced.closeModal();
 const syncAllToEbay = () => eBay.syncAll();
+const publishAllToEbay = () => eBay.publishAll();
 const loadEbayInventory = () => eBay.loadInventory();
 const printBarcode = () => window.print();
 const getAdjustQty = () => parseInt(UI.el('adjustQtyInput')?.value) || 1;

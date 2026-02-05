@@ -382,6 +382,17 @@ const ebayAPI = {
     async getCategorySuggestions(accountId, query) { return this.apiRequest(accountId, 'GET', `/commerce/taxonomy/v1/category_tree/0/get_category_suggestions?q=${encodeURIComponent(query)}`); },
     async getItemAspectsForCategory(accountId, categoryId) { return this.apiRequest(accountId, 'GET', `/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category?category_id=${categoryId}`); },
 
+    // Offer and Listing APIs
+    async getOffers(accountId, sku) { return this.apiRequest(accountId, 'GET', `/sell/inventory/v1/offer?sku=${encodeURIComponent(sku)}`); },
+    async createOffer(accountId, offerData) { return this.apiRequest(accountId, 'POST', '/sell/inventory/v1/offer', offerData); },
+    async publishOffer(accountId, offerId) { return this.apiRequest(accountId, 'POST', `/sell/inventory/v1/offer/${offerId}/publish`); },
+    async deleteOffer(accountId, offerId) { return this.apiRequest(accountId, 'DELETE', `/sell/inventory/v1/offer/${offerId}`); },
+
+    // Business Policies (needed for offers)
+    async getFulfillmentPolicies(accountId, marketplaceId = 'EBAY_US') { return this.apiRequest(accountId, 'GET', `/sell/account/v1/fulfillment_policy?marketplace_id=${marketplaceId}`); },
+    async getPaymentPolicies(accountId, marketplaceId = 'EBAY_US') { return this.apiRequest(accountId, 'GET', `/sell/account/v1/payment_policy?marketplace_id=${marketplaceId}`); },
+    async getReturnPolicies(accountId, marketplaceId = 'EBAY_US') { return this.apiRequest(accountId, 'GET', `/sell/account/v1/return_policy?marketplace_id=${marketplaceId}`); },
+
     async syncItemToEbay(accountId, warehouseItem) {
         const aspects = { 'Warehouse Location': [warehouseItem.FullLocation] };
         if (warehouseItem.ItemSpecifics) {
@@ -399,6 +410,79 @@ const ebayAPI = {
         const result = await this.createOrUpdateInventoryItem(accountId, warehouseItem.SKU, itemData);
         await data.saveAccount(accountId, { lastSync: new Date().toISOString() });
         return result;
+    },
+
+    // Create and publish a listing (offer) for an inventory item
+    async createAndPublishListing(accountId, warehouseItem, policies) {
+        const sku = warehouseItem.SKU;
+        const marketplaceId = 'EBAY_US';
+
+        // Check if offer already exists
+        try {
+            const existingOffers = await this.getOffers(accountId, sku);
+            if (existingOffers.offers?.length > 0) {
+                // Offer exists - it's already listed or we can update it
+                const offer = existingOffers.offers[0];
+                return { offerId: offer.offerId, status: offer.status, listingId: offer.listing?.listingId, existing: true };
+            }
+        } catch (err) {
+            // No offers exist, continue to create
+        }
+
+        // Create offer
+        const offerData = {
+            sku: sku,
+            marketplaceId: marketplaceId,
+            format: 'FIXED_PRICE',
+            listingDescription: warehouseItem.Description || `Item ${sku}`,
+            availableQuantity: warehouseItem.Quantity,
+            pricingSummary: {
+                price: {
+                    value: String(warehouseItem.Price || '9.99'),
+                    currency: 'USD'
+                }
+            },
+            listingPolicies: {
+                fulfillmentPolicyId: policies.fulfillmentPolicyId,
+                paymentPolicyId: policies.paymentPolicyId,
+                returnPolicyId: policies.returnPolicyId
+            },
+            categoryId: warehouseItem.CategoryId || '175673' // Default: Other category
+        };
+
+        const offer = await this.createOffer(accountId, offerData);
+
+        // Publish the offer to create actual listing
+        const published = await this.publishOffer(accountId, offer.offerId);
+
+        return { offerId: offer.offerId, listingId: published.listingId, status: 'PUBLISHED' };
+    },
+
+    // Get or use default business policies
+    async getBusinessPolicies(accountId) {
+        const marketplaceId = 'EBAY_US';
+        let fulfillmentPolicyId, paymentPolicyId, returnPolicyId;
+
+        try {
+            const fulfillment = await this.getFulfillmentPolicies(accountId, marketplaceId);
+            fulfillmentPolicyId = fulfillment.fulfillmentPolicies?.[0]?.fulfillmentPolicyId;
+        } catch (e) { console.log('No fulfillment policies:', e.message); }
+
+        try {
+            const payment = await this.getPaymentPolicies(accountId, marketplaceId);
+            paymentPolicyId = payment.paymentPolicies?.[0]?.paymentPolicyId;
+        } catch (e) { console.log('No payment policies:', e.message); }
+
+        try {
+            const returns = await this.getReturnPolicies(accountId, marketplaceId);
+            returnPolicyId = returns.returnPolicies?.[0]?.returnPolicyId;
+        } catch (e) { console.log('No return policies:', e.message); }
+
+        if (!fulfillmentPolicyId || !paymentPolicyId || !returnPolicyId) {
+            throw new Error('Missing business policies. Please create fulfillment, payment, and return policies in eBay Seller Hub first.');
+        }
+
+        return { fulfillmentPolicyId, paymentPolicyId, returnPolicyId };
     },
 
     // Smart two-way sync: reconcile eBay sales with local inventory changes
@@ -854,6 +938,93 @@ app.get('/api/ebay/categories/search/:accountId', async (req, res) => {
 app.get('/api/ebay/categories/:categoryId/aspects/:accountId', async (req, res) => {
     try { res.json(await ebayAPI.getItemAspectsForCategory(req.params.accountId, req.params.categoryId)); }
     catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Get business policies (needed for creating listings)
+app.get('/api/ebay/policies/:accountId', async (req, res) => {
+    try {
+        const policies = await ebayAPI.getBusinessPolicies(req.params.accountId);
+        res.json(policies);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Publish a single item as listing
+app.post('/api/ebay/publish/:accountId/:sku', async (req, res) => {
+    try {
+        const item = await data.getItem(req.params.sku);
+        if (!item) return res.status(404).json({ error: 'Item not found' });
+
+        // First sync the inventory item
+        await ebayAPI.syncItemToEbay(req.params.accountId, {
+            SKU: item.sku, Price: item.price || 0, Quantity: item.currentQty,
+            Description: item.description, FullLocation: item.fullLocation,
+            Condition: item.condition || 'NEW', ItemSpecifics: item.itemSpecifics || {}
+        });
+
+        // Get business policies
+        const policies = await ebayAPI.getBusinessPolicies(req.params.accountId);
+
+        // Create and publish offer
+        const result = await ebayAPI.createAndPublishListing(req.params.accountId, {
+            SKU: item.sku, Price: item.price || 9.99, Quantity: item.currentQty,
+            Description: item.description, CategoryId: item.categoryId
+        }, policies);
+
+        await data.addHistory(req.params.sku, { date: new Date(), action: 'EBAY_PUBLISH', qty: 0, newTotal: item.currentQty, note: `Published to eBay (Listing: ${result.listingId})` });
+        res.json({ message: 'Item published to eBay', result });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Publish all items as listings
+app.post('/api/ebay/publish-all/:accountId', async (req, res) => {
+    try {
+        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
+            return res.status(401).json({ error: 'eBay account not connected' });
+        }
+
+        // Get business policies first
+        let policies;
+        try {
+            policies = await ebayAPI.getBusinessPolicies(req.params.accountId);
+        } catch (err) {
+            return res.status(400).json({ error: err.message });
+        }
+
+        const results = { published: [], failed: [] };
+        const items = await data.getAllItems();
+
+        for (const item of items) {
+            try {
+                const fullItem = await data.getItem(item.SKU);
+                if (!fullItem || !fullItem.description) {
+                    results.failed.push({ sku: item.SKU, error: 'Missing description' });
+                    continue;
+                }
+
+                // Sync inventory item first
+                await ebayAPI.syncItemToEbay(req.params.accountId, {
+                    SKU: fullItem.sku, Price: fullItem.price || 0, Quantity: fullItem.currentQty,
+                    Description: fullItem.description, FullLocation: fullItem.fullLocation,
+                    Condition: fullItem.condition || 'NEW', ItemSpecifics: fullItem.itemSpecifics || {}
+                });
+
+                // Create and publish offer
+                const result = await ebayAPI.createAndPublishListing(req.params.accountId, {
+                    SKU: fullItem.sku, Price: fullItem.price || 9.99, Quantity: fullItem.currentQty,
+                    Description: fullItem.description, CategoryId: fullItem.categoryId
+                }, policies);
+
+                results.published.push({ sku: fullItem.sku, listingId: result.listingId, existing: result.existing });
+            } catch (err) {
+                results.failed.push({ sku: item.SKU, error: err.message });
+            }
+        }
+
+        res.json({
+            message: `Published ${results.published.length} listings, ${results.failed.length} failed`,
+            results
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Admin routes
