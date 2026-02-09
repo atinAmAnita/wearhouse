@@ -122,15 +122,6 @@
         .notification.show { display: block; }
         .notification.error { border-color: #ef4444; }
         .notification.success { border-color: #22c55e; }
-        .back-link {
-            text-align: center;
-            margin-top: 30px;
-        }
-        .back-link a {
-            color: #888;
-            text-decoration: none;
-        }
-        .back-link a:hover { color: #f97316; }
     </style>
 </head>
 <body>
@@ -152,7 +143,7 @@
             </select>
 
             <h3 style="color: #888; font-size: 0.9rem; margin: 20px 0 10px;">Selling Inventory</h3>
-            <button onclick="pullFromEbay()" id="pullBtn">Pull My Listings</button>
+            <button onclick="pullFromEbay()" id="pullBtn">Pull Active Listings</button>
             <button onclick="downloadExcel()" id="downloadBtn" class="secondary" disabled>Download Listings Excel</button>
             <p id="pullStatus" style="color: #888; font-size: 0.9rem; text-align: center; margin-top: 10px;"></p>
 
@@ -161,13 +152,8 @@
             <p id="testStatus" style="color: #888; font-size: 0.9rem; text-align: center; margin-top: 10px;"></p>
         </div>
 
-        <div id="debugOutput" class="results" style="display:none; background: #111; font-family: monospace; font-size: 0.75rem; max-height: 200px; overflow: auto;">
-            <h3 style="color: #888;">Debug Response</h3>
-            <pre id="debugPre" style="white-space: pre-wrap; word-break: break-all;"></pre>
-        </div>
-
         <div id="results" class="results">
-            <h3>eBay Inventory (<span id="itemCount">0</span> items)</h3>
+            <h3>Active Listings (<span id="itemCount">0</span> items)</h3>
             <table>
                 <thead>
                     <tr>
@@ -295,14 +281,8 @@
                 downloadBtn.disabled = false;
                 notify('Data pulled successfully!', 'success');
 
-                // Debug: show raw response info
-                if (data.debug) {
-                    console.log('eBay Raw Response:', data.debug);
-                    document.getElementById('debugPre').textContent = data.debug;
-                    document.getElementById('debugOutput').style.display = 'block';
-                }
-                if (data.error || data.errorDetail) {
-                    statusEl.innerHTML += `<br><span style="color: #ef4444;">eBay Error: ${data.error || ''} ${data.errorDetail || ''}</span>`;
+                if (data.error) {
+                    statusEl.innerHTML += `<br><span style="color: #ef4444;">eBay Error: ${data.error}</span>`;
                 }
 
             } catch (err) {
@@ -310,7 +290,7 @@
                 notify('Error: ' + err.message, 'error');
             } finally {
                 pullBtn.disabled = false;
-                pullBtn.textContent = '1. Pull Data from eBay';
+                pullBtn.textContent = 'Pull Active Listings';
             }
         }
 

@@ -6,8 +6,6 @@ const XLSX = require('xlsx');
 const bwipjs = require('bwip-js');
 const db = require('./database');
 
-const API_VERSION = '2.1.0'; // Version for debugging deployments
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -667,14 +665,21 @@ const ebayAPI = {
     <RequesterCredentials>
         <eBayAuthToken>${token}</eBayAuthToken>
     </RequesterCredentials>
+    <DetailLevel>ReturnAll</DetailLevel>
     <ActiveList>
         <Include>true</Include>
+        <ListingType>FixedPriceItem</ListingType>
         <Pagination>
             <EntriesPerPage>200</EntriesPerPage>
             <PageNumber>1</PageNumber>
         </Pagination>
+        <Sort>TimeLeft</Sort>
     </ActiveList>
+    <SellingSummary>
+        <Include>true</Include>
+    </SellingSummary>
     <ErrorLanguage>en_US</ErrorLanguage>
+    <WarningLevel>High</WarningLevel>
 </GetMyeBaySellingRequest>`;
 
         const response = await fetch(tradingEndpoint, {
@@ -690,9 +695,6 @@ const ebayAPI = {
         });
 
         const xmlText = await response.text();
-
-        // Debug: log first 500 chars of response
-        console.log('GetMyeBaySelling response preview:', xmlText.substring(0, 500));
 
         const items = [];
 
@@ -724,22 +726,17 @@ const ebayAPI = {
             });
         }
 
-        console.log('Parsed items count:', items.length);
-
         // Get total count
         const totalMatch = xmlText.match(/<TotalNumberOfEntries>(\d+)<\/TotalNumberOfEntries>/);
         const totalEntries = totalMatch ? parseInt(totalMatch[1]) : items.length;
 
         const errorMatch = xmlText.match(/<ShortMessage>([^<]*)<\/ShortMessage>/);
-        const longErrorMatch = xmlText.match(/<LongMessage>([^<]*)<\/LongMessage>/);
 
         return {
             items,
             count: items.length,
             totalEntries,
-            error: errorMatch ? errorMatch[1] : null,
-            errorDetail: longErrorMatch ? longErrorMatch[1] : null,
-            debug: xmlText.substring(0, 1000)
+            error: errorMatch ? errorMatch[1] : null
         };
     },
 
@@ -1326,11 +1323,9 @@ app.get('/api/ebay/watchlist/:accountId', async (req, res) => {
 // Active listings using Trading API (GetMyeBaySelling)
 app.get('/api/ebay/listings/:accountId', async (req, res) => {
     try {
-        console.log('Fetching active listings for account:', req.params.accountId);
         const result = await ebayAPI.getActiveListings(req.params.accountId);
-        console.log('Active listings result:', result.count, 'items');
-        res.json({ ...result, apiVersion: API_VERSION });
-    } catch (err) { res.status(500).json({ error: err.message, apiVersion: API_VERSION }); }
+        res.json(result);
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/ebay/sync/:accountId/:sku', async (req, res) => {
