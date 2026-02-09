@@ -401,6 +401,246 @@ const ebayAPI = {
     async getPaymentPolicies(accountId, marketplaceId = 'EBAY_US') { return this.apiRequest(accountId, 'GET', `/sell/account/v1/payment_policy?marketplace_id=${marketplaceId}`); },
     async getReturnPolicies(accountId, marketplaceId = 'EBAY_US') { return this.apiRequest(accountId, 'GET', `/sell/account/v1/return_policy?marketplace_id=${marketplaceId}`); },
 
+    // Purchase History (Trading API - XML based)
+    async getPurchaseHistory(accountId, days = 30) {
+        let account = await data.getAccount(accountId);
+        if (!account) throw new Error('Account not found');
+
+        // Refresh token if needed (same logic as apiRequest)
+        if (!(await this.isAccountAuthenticated(accountId))) {
+            if (account.tokens?.refresh_token) {
+                await this.refreshAccessToken(accountId);
+                account = await data.getAccount(accountId);
+            } else {
+                throw new Error('Account not authenticated');
+            }
+        }
+
+        const token = account.tokens.access_token;
+        const tradingEndpoint = config.ebay.environment === 'production'
+            ? 'https://api.ebay.com/ws/api.dll'
+            : 'https://api.sandbox.ebay.com/ws/api.dll';
+
+        const fromDate = new Date();
+        fromDate.setDate(fromDate.getDate() - days);
+
+        const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
+<GetMyeBayBuyingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+    <RequesterCredentials>
+        <eBayAuthToken>${token}</eBayAuthToken>
+    </RequesterCredentials>
+    <BuyingSummary>
+        <Include>true</Include>
+    </BuyingSummary>
+    <WonList>
+        <Include>true</Include>
+        <DurationInDays>60</DurationInDays>
+        <Sort>EndTime</Sort>
+        <Pagination>
+            <EntriesPerPage>100</EntriesPerPage>
+            <PageNumber>1</PageNumber>
+        </Pagination>
+    </WonList>
+    <ErrorLanguage>en_US</ErrorLanguage>
+    <WarningLevel>High</WarningLevel>
+</GetMyeBayBuyingRequest>`;
+
+        const response = await fetch(tradingEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'text/xml',
+                'X-EBAY-API-SITEID': '0',
+                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+                'X-EBAY-API-CALL-NAME': 'GetMyeBayBuying',
+                'X-EBAY-API-IAF-TOKEN': token
+            },
+            body: xmlRequest
+        });
+
+        const xmlText = await response.text();
+
+        // Parse XML response to extract items
+        const purchases = [];
+        const itemMatches = xmlText.matchAll(/<Item>([\s\S]*?)<\/Item>/g);
+
+        for (const match of itemMatches) {
+            const itemXml = match[1];
+            const getTag = (tag) => {
+                const m = itemXml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
+                return m ? m[1] : '';
+            };
+
+            purchases.push({
+                itemId: getTag('ItemID'),
+                title: getTag('Title'),
+                price: getTag('CurrentPrice') || getTag('ConvertedCurrentPrice'),
+                currency: itemXml.match(/currencyID="([^"]+)"/)?.[1] || 'USD',
+                quantity: getTag('QuantityPurchased') || '1',
+                endTime: getTag('EndTime'),
+                seller: getTag('UserID'),
+                listingStatus: getTag('ListingStatus')
+            });
+        }
+
+        // Extract any errors
+        const errorMatch = xmlText.match(/<ShortMessage>([^<]*)<\/ShortMessage>/);
+        const error = errorMatch ? errorMatch[1] : null;
+
+        // Extract buying summary
+        const getGlobalTag = (tag) => {
+            const m = xmlText.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
+            return m ? m[1] : null;
+        };
+
+        const summary = {
+            totalWon: getGlobalTag('WonCount'),
+            totalBidding: getGlobalTag('BiddingCount'),
+            totalWatching: getGlobalTag('WatchingCount')
+        };
+
+        return { purchases, summary, error, note: 'eBay API only returns purchases from last 60 days' };
+    },
+
+    // Get eBay User Info (test connection)
+    async getUserInfo(accountId) {
+        let account = await data.getAccount(accountId);
+        if (!account) throw new Error('Account not found');
+
+        if (!(await this.isAccountAuthenticated(accountId))) {
+            if (account.tokens?.refresh_token) {
+                await this.refreshAccessToken(accountId);
+                account = await data.getAccount(accountId);
+            } else {
+                throw new Error('Account not authenticated');
+            }
+        }
+
+        const token = account.tokens.access_token;
+        const tradingEndpoint = config.ebay.environment === 'production'
+            ? 'https://api.ebay.com/ws/api.dll'
+            : 'https://api.sandbox.ebay.com/ws/api.dll';
+
+        const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
+<GetUserRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+    <RequesterCredentials>
+        <eBayAuthToken>${token}</eBayAuthToken>
+    </RequesterCredentials>
+    <ErrorLanguage>en_US</ErrorLanguage>
+</GetUserRequest>`;
+
+        const response = await fetch(tradingEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'text/xml',
+                'X-EBAY-API-SITEID': '0',
+                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+                'X-EBAY-API-CALL-NAME': 'GetUser',
+                'X-EBAY-API-IAF-TOKEN': token
+            },
+            body: xmlRequest
+        });
+
+        const xmlText = await response.text();
+
+        const getTag = (tag) => {
+            const m = xmlText.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
+            return m ? m[1] : null;
+        };
+
+        const errorMatch = xmlText.match(/<ShortMessage>([^<]*)<\/ShortMessage>/);
+
+        return {
+            success: !errorMatch,
+            error: errorMatch ? errorMatch[1] : null,
+            user: {
+                userId: getTag('UserID'),
+                email: getTag('Email'),
+                feedbackScore: getTag('FeedbackScore'),
+                registrationDate: getTag('RegistrationDate'),
+                sellerLevel: getTag('SellerLevel'),
+                storeName: getTag('StoreName'),
+                storeUrl: getTag('StoreURL')
+            }
+        };
+    },
+
+    // Get Watch List
+    async getWatchList(accountId) {
+        let account = await data.getAccount(accountId);
+        if (!account) throw new Error('Account not found');
+
+        if (!(await this.isAccountAuthenticated(accountId))) {
+            if (account.tokens?.refresh_token) {
+                await this.refreshAccessToken(accountId);
+                account = await data.getAccount(accountId);
+            } else {
+                throw new Error('Account not authenticated');
+            }
+        }
+
+        const token = account.tokens.access_token;
+        const tradingEndpoint = config.ebay.environment === 'production'
+            ? 'https://api.ebay.com/ws/api.dll'
+            : 'https://api.sandbox.ebay.com/ws/api.dll';
+
+        const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
+<GetMyeBayBuyingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+    <RequesterCredentials>
+        <eBayAuthToken>${token}</eBayAuthToken>
+    </RequesterCredentials>
+    <WatchList>
+        <Include>true</Include>
+        <Pagination>
+            <EntriesPerPage>50</EntriesPerPage>
+            <PageNumber>1</PageNumber>
+        </Pagination>
+    </WatchList>
+    <ErrorLanguage>en_US</ErrorLanguage>
+</GetMyeBayBuyingRequest>`;
+
+        const response = await fetch(tradingEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'text/xml',
+                'X-EBAY-API-SITEID': '0',
+                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+                'X-EBAY-API-CALL-NAME': 'GetMyeBayBuying',
+                'X-EBAY-API-IAF-TOKEN': token
+            },
+            body: xmlRequest
+        });
+
+        const xmlText = await response.text();
+
+        const items = [];
+        const itemMatches = xmlText.matchAll(/<Item>([\s\S]*?)<\/Item>/g);
+
+        for (const match of itemMatches) {
+            const itemXml = match[1];
+            const getTag = (tag) => {
+                const m = itemXml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
+                return m ? m[1] : '';
+            };
+
+            items.push({
+                itemId: getTag('ItemID'),
+                title: getTag('Title'),
+                price: getTag('CurrentPrice'),
+                currency: itemXml.match(/currencyID="([^"]+)"/)?.[1] || 'USD',
+                endTime: getTag('EndTime'),
+                bidCount: getTag('BidCount') || '0'
+            });
+        }
+
+        const errorMatch = xmlText.match(/<ShortMessage>([^<]*)<\/ShortMessage>/);
+
+        return {
+            items,
+            count: items.length,
+            error: errorMatch ? errorMatch[1] : null
+        };
+    },
+
     async syncItemToEbay(accountId, warehouseItem) {
         const aspects = { 'Warehouse Location': [warehouseItem.FullLocation] };
         if (warehouseItem.ItemSpecifics) {
@@ -957,6 +1197,28 @@ app.get('/api/ebay/callback', async (req, res) => {
 app.get('/api/ebay/inventory/:accountId', async (req, res) => {
     try { res.json(await ebayAPI.getInventoryItems(req.params.accountId)); }
     catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/ebay/purchases/:accountId', async (req, res) => {
+    try {
+        const days = parseInt(req.query.days) || 30;
+        const result = await ebayAPI.getPurchaseHistory(req.params.accountId, days);
+        res.json(result);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/ebay/user/:accountId', async (req, res) => {
+    try {
+        const result = await ebayAPI.getUserInfo(req.params.accountId);
+        res.json(result);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/ebay/watchlist/:accountId', async (req, res) => {
+    try {
+        const result = await ebayAPI.getWatchList(req.params.accountId);
+        res.json(result);
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/ebay/sync/:accountId/:sku', async (req, res) => {

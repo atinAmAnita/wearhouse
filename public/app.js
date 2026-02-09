@@ -308,15 +308,18 @@ const AddItem = {
             const resultPanel = UI.el('addResult');
             UI.show(resultPanel);
 
-            UI.setHTML(resultPanel.querySelector('.item-details'), `
-                <p><strong>SKU:</strong> ${data.item.SKU}</p>
-                <p><strong>Item ID:</strong> ${data.item.ItemCode}</p>
-                <p><strong>Location:</strong> ${data.item.FullLocation}</p>
-                <p><strong>Price:</strong> $${parseFloat(data.item.Price || 0).toFixed(2)}</p>
-                <p><strong>Quantity:</strong> ${data.item.Quantity}</p>
-                <p><strong>Description:</strong> ${data.item.Description || 'N/A'}</p>
-                ${pendingAdvanced ? '<p><strong>Details:</strong> Category & condition set</p>' : ''}
-            `);
+            const detailsEl = resultPanel.querySelector('.item-details');
+            if (detailsEl) {
+                detailsEl.innerHTML = `
+                    <p><strong>SKU:</strong> ${data.item.SKU}</p>
+                    <p><strong>Item ID:</strong> ${data.item.ItemCode}</p>
+                    <p><strong>Location:</strong> ${data.item.FullLocation}</p>
+                    <p><strong>Price:</strong> $${parseFloat(data.item.Price || 0).toFixed(2)}</p>
+                    <p><strong>Quantity:</strong> ${data.item.Quantity}</p>
+                    <p><strong>Description:</strong> ${data.item.Description || 'N/A'}</p>
+                    ${pendingAdvanced ? '<p><strong>Details:</strong> Category & condition set</p>' : ''}
+                `;
+            }
 
             UI.el('barcodeImage').src = data.barcode;
             UI.notify(data.message, 'success');
@@ -356,15 +359,18 @@ const Lookup = {
             const resultPanel = UI.el('lookupResult');
             UI.show(resultPanel);
 
-            UI.setHTML(resultPanel.querySelector('.item-details'), `
-                <p><strong>SKU:</strong> ${data.item.SKU}</p>
-                <p><strong>Location:</strong> Drawer ${data.item.DrawerNumber}, Position ${data.item.PositionNumber}</p>
-                <p class="item-price"><strong>Price:</strong> $${parseFloat(data.item.Price || 0).toFixed(2)}</p>
-                <p class="item-qty"><strong>Quantity:</strong> ${data.item.Quantity}</p>
-                <p><strong>Description:</strong> ${data.item.Description || 'N/A'}</p>
-                <p><strong>Added:</strong> ${UI.formatDateTime(data.item.DateAdded)}</p>
-                <button class="btn btn-secondary" onclick="History.show('${data.item.SKU}')" style="margin-top: 15px;">View History</button>
-            `);
+            const lookupDetailsEl = resultPanel.querySelector('.item-details');
+            if (lookupDetailsEl) {
+                lookupDetailsEl.innerHTML = `
+                    <p><strong>SKU:</strong> ${data.item.SKU}</p>
+                    <p><strong>Location:</strong> Drawer ${data.item.DrawerNumber}, Position ${data.item.PositionNumber}</p>
+                    <p class="item-price"><strong>Price:</strong> $${parseFloat(data.item.Price || 0).toFixed(2)}</p>
+                    <p class="item-qty"><strong>Quantity:</strong> ${data.item.Quantity}</p>
+                    <p><strong>Description:</strong> ${data.item.Description || 'N/A'}</p>
+                    <p><strong>Added:</strong> ${UI.formatDateTime(data.item.DateAdded)}</p>
+                    <button class="btn btn-secondary" onclick="History.show('${data.item.SKU}')" style="margin-top: 15px;">View History</button>
+                `;
+            }
 
             // Set the price input to current price
             UI.el('adjustPriceInput').value = data.item.Price || '';
@@ -417,8 +423,8 @@ const Lookup = {
             State.currentItem.Quantity = newQty;
 
             const details = document.querySelector('#lookupResult .item-details');
-            const qtyP = details.querySelector('.item-qty');
-            qtyP.innerHTML = `<strong>Quantity:</strong> ${newQty}`;
+            const qtyP = details?.querySelector('.item-qty');
+            if (qtyP) qtyP.innerHTML = `<strong>Quantity:</strong> ${newQty}`;
 
             UI.notify(`Quantity updated to ${newQty}`, 'success');
         } catch (err) {
@@ -436,8 +442,8 @@ const Lookup = {
             State.currentItem.Price = newPrice;
 
             const details = document.querySelector('#lookupResult .item-details');
-            const priceP = details.querySelector('.item-price');
-            priceP.innerHTML = `<strong>Price:</strong> $${newPrice.toFixed(2)}`;
+            const priceP = details?.querySelector('.item-price');
+            if (priceP) priceP.innerHTML = `<strong>Price:</strong> $${newPrice.toFixed(2)}`;
 
             UI.notify(`Price updated to $${newPrice.toFixed(2)}`, 'success');
         } catch (err) {
@@ -1078,7 +1084,8 @@ const eBay = {
                 `;
             }
 
-            UI.setHTML(resultsDiv.querySelector('.sync-summary'), html);
+            const syncSummaryEl = resultsDiv.querySelector('.sync-summary');
+            if (syncSummaryEl) syncSummaryEl.innerHTML = html;
             UI.notify(data.message, data.results.failed.length ? 'info' : 'success');
             eBay.loadStatus();
             // Also refresh the eBay inventory list and local inventory
@@ -1126,7 +1133,8 @@ const eBay = {
                 `;
             }
 
-            UI.setHTML(resultsDiv.querySelector('.sync-summary'), html);
+            const publishSummaryEl = resultsDiv.querySelector('.sync-summary');
+            if (publishSummaryEl) publishSummaryEl.innerHTML = html;
             UI.notify(data.message, data.results.failed.length ? 'info' : 'success');
             eBay.loadStatus();
             eBay.loadInventory();

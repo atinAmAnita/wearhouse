@@ -151,9 +151,14 @@
                 <option value="">-- Loading accounts --</option>
             </select>
 
-            <button onclick="pullFromEbay()" id="pullBtn">1. Pull Data from eBay</button>
-            <button onclick="downloadExcel()" id="downloadBtn" class="secondary" disabled>2. Download Excel File</button>
+            <h3 style="color: #888; font-size: 0.9rem; margin: 20px 0 10px;">Selling Inventory</h3>
+            <button onclick="pullFromEbay()" id="pullBtn">Pull My Listings</button>
+            <button onclick="downloadExcel()" id="downloadBtn" class="secondary" disabled>Download Listings Excel</button>
             <p id="pullStatus" style="color: #888; font-size: 0.9rem; text-align: center; margin-top: 10px;"></p>
+
+            <h3 style="color: #888; font-size: 0.9rem; margin: 20px 0 10px;">Test Connection</h3>
+            <button onclick="testConnection()" id="testBtn" style="background: #22c55e;">Test eBay Connection</button>
+            <p id="testStatus" style="color: #888; font-size: 0.9rem; text-align: center; margin-top: 10px;"></p>
         </div>
 
         <div id="results" class="results">
@@ -170,9 +175,11 @@
             </table>
         </div>
 
-        <div class="back-link">
-            <a href="/app">← Back to STOCKFORGE</a> | <a href="/admin">Admin Panel</a>
+        <div id="userResults" class="results">
+            <h3 style="color: #22c55e;">eBay Account Info</h3>
+            <div id="userInfo" style="line-height: 1.8;"></div>
         </div>
+
     </div>
 
     <div id="notification" class="notification"></div>
@@ -307,6 +314,50 @@
 
             notify('Downloading Excel file...', 'success');
             window.location.href = `/api/debug/ebay-export/${accountId}`;
+        }
+
+        // Test Connection - Get User Info
+        async function testConnection() {
+            const accountId = getAccountId();
+            if (!accountId) {
+                notify('Please select an account first', 'error');
+                return;
+            }
+
+            const btn = document.getElementById('testBtn');
+            const statusEl = document.getElementById('testStatus');
+
+            btn.disabled = true;
+            btn.textContent = 'Testing...';
+            statusEl.textContent = 'Connecting to eBay...';
+
+            try {
+                const res = await fetch(`/api/ebay/user/${accountId}`);
+                const data = await res.json();
+
+                if (data.error) throw new Error(data.error);
+
+                const user = data.user || {};
+                document.getElementById('userInfo').innerHTML = `
+                    <p><strong>User ID:</strong> ${user.userId || 'N/A'}</p>
+                    <p><strong>Email:</strong> ${user.email || 'N/A'}</p>
+                    <p><strong>Feedback Score:</strong> ${user.feedbackScore || 'N/A'}</p>
+                    <p><strong>Member Since:</strong> ${user.registrationDate ? new Date(user.registrationDate).toLocaleDateString() : 'N/A'}</p>
+                    ${user.storeName ? `<p><strong>Store:</strong> ${user.storeName}</p>` : ''}
+                `;
+
+                document.getElementById('userResults').classList.add('show');
+
+                statusEl.innerHTML = `<span style="color: #22c55e;">&#10003; Connection successful! Logged in as: ${user.userId}</span>`;
+                notify('Connection verified!', 'success');
+
+            } catch (err) {
+                statusEl.innerHTML = `<span style="color: #ef4444;">&#10007; Error: ${err.message}</span>`;
+                notify('Error: ' + err.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Test eBay Connection';
+            }
         }
 
         // Init
