@@ -6,6 +6,8 @@ const XLSX = require('xlsx');
 const bwipjs = require('bwip-js');
 const db = require('./database');
 
+const API_VERSION = '2.1.0'; // Version for debugging deployments
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -1321,11 +1323,14 @@ app.get('/api/ebay/watchlist/:accountId', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Active listings using Trading API (GetMyeBaySelling)
 app.get('/api/ebay/listings/:accountId', async (req, res) => {
     try {
+        console.log('Fetching active listings for account:', req.params.accountId);
         const result = await ebayAPI.getActiveListings(req.params.accountId);
-        res.json(result);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+        console.log('Active listings result:', result.count, 'items');
+        res.json({ ...result, apiVersion: API_VERSION });
+    } catch (err) { res.status(500).json({ error: err.message, apiVersion: API_VERSION }); }
 });
 
 app.post('/api/ebay/sync/:accountId/:sku', async (req, res) => {
