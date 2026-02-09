@@ -689,8 +689,16 @@ const ebayAPI = {
 
         const xmlText = await response.text();
 
+        // Debug: log first 500 chars of response
+        console.log('GetMyeBaySelling response preview:', xmlText.substring(0, 500));
+
         const items = [];
-        const itemMatches = xmlText.matchAll(/<Item>([\s\S]*?)<\/Item>/g);
+
+        // Extract ItemArray section first (items are in ActiveList > ItemArray > Item)
+        const itemArrayMatch = xmlText.match(/<ItemArray>([\s\S]*?)<\/ItemArray>/);
+        const itemArrayXml = itemArrayMatch ? itemArrayMatch[1] : xmlText;
+
+        const itemMatches = itemArrayXml.matchAll(/<Item>([\s\S]*?)<\/Item>/g);
 
         for (const match of itemMatches) {
             const itemXml = match[1];
@@ -714,17 +722,22 @@ const ebayAPI = {
             });
         }
 
+        console.log('Parsed items count:', items.length);
+
         // Get total count
         const totalMatch = xmlText.match(/<TotalNumberOfEntries>(\d+)<\/TotalNumberOfEntries>/);
         const totalEntries = totalMatch ? parseInt(totalMatch[1]) : items.length;
 
         const errorMatch = xmlText.match(/<ShortMessage>([^<]*)<\/ShortMessage>/);
+        const longErrorMatch = xmlText.match(/<LongMessage>([^<]*)<\/LongMessage>/);
 
         return {
             items,
             count: items.length,
             totalEntries,
-            error: errorMatch ? errorMatch[1] : null
+            error: errorMatch ? errorMatch[1] : null,
+            errorDetail: longErrorMatch ? longErrorMatch[1] : null,
+            debug: xmlText.substring(0, 1000)
         };
     },
 
