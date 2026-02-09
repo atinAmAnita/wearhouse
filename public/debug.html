@@ -161,6 +161,11 @@
             <p id="testStatus" style="color: #888; font-size: 0.9rem; text-align: center; margin-top: 10px;"></p>
         </div>
 
+        <div id="debugOutput" class="results" style="display:none; background: #111; font-family: monospace; font-size: 0.75rem; max-height: 200px; overflow: auto;">
+            <h3 style="color: #888;">Debug Response</h3>
+            <pre id="debugPre" style="white-space: pre-wrap; word-break: break-all;"></pre>
+        </div>
+
         <div id="results" class="results">
             <h3>eBay Inventory (<span id="itemCount">0</span> items)</h3>
             <table>
@@ -289,6 +294,16 @@
                 statusEl.innerHTML = `<span style="color: #22c55e;">&#10003; Pulled ${pulledData.length} items from eBay. Ready to download.</span>`;
                 downloadBtn.disabled = false;
                 notify('Data pulled successfully!', 'success');
+
+                // Debug: show raw response info
+                if (data.debug) {
+                    console.log('eBay Raw Response:', data.debug);
+                    document.getElementById('debugPre').textContent = data.debug;
+                    document.getElementById('debugOutput').style.display = 'block';
+                }
+                if (data.error || data.errorDetail) {
+                    statusEl.innerHTML += `<br><span style="color: #ef4444;">eBay Error: ${data.error || ''} ${data.errorDetail || ''}</span>`;
+                }
 
             } catch (err) {
                 statusEl.innerHTML = `<span style="color: #ef4444;">&#10007; Error: ${err.message}</span>`;
