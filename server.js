@@ -641,6 +641,93 @@ const ebayAPI = {
         };
     },
 
+    // Get Active Listings (what user is selling)
+    async getActiveListings(accountId) {
+        let account = await data.getAccount(accountId);
+        if (!account) throw new Error('Account not found');
+
+        if (!(await this.isAccountAuthenticated(accountId))) {
+            if (account.tokens?.refresh_token) {
+                await this.refreshAccessToken(accountId);
+                account = await data.getAccount(accountId);
+            } else {
+                throw new Error('Account not authenticated');
+            }
+        }
+
+        const token = account.tokens.access_token;
+        const tradingEndpoint = config.ebay.environment === 'production'
+            ? 'https://api.ebay.com/ws/api.dll'
+            : 'https://api.sandbox.ebay.com/ws/api.dll';
+
+        const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
+<GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+    <RequesterCredentials>
+        <eBayAuthToken>${token}</eBayAuthToken>
+    </RequesterCredentials>
+    <ActiveList>
+        <Include>true</Include>
+        <Pagination>
+            <EntriesPerPage>200</EntriesPerPage>
+            <PageNumber>1</PageNumber>
+        </Pagination>
+    </ActiveList>
+    <ErrorLanguage>en_US</ErrorLanguage>
+</GetMyeBaySellingRequest>`;
+
+        const response = await fetch(tradingEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'text/xml',
+                'X-EBAY-API-SITEID': '0',
+                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+                'X-EBAY-API-CALL-NAME': 'GetMyeBaySelling',
+                'X-EBAY-API-IAF-TOKEN': token
+            },
+            body: xmlRequest
+        });
+
+        const xmlText = await response.text();
+
+        const items = [];
+        const itemMatches = xmlText.matchAll(/<Item>([\s\S]*?)<\/Item>/g);
+
+        for (const match of itemMatches) {
+            const itemXml = match[1];
+            const getTag = (tag) => {
+                const m = itemXml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
+                return m ? m[1] : '';
+            };
+
+            items.push({
+                itemId: getTag('ItemID'),
+                sku: getTag('SKU') || getTag('ItemID'),
+                title: getTag('Title'),
+                price: getTag('CurrentPrice'),
+                currency: itemXml.match(/currencyID="([^"]+)"/)?.[1] || 'USD',
+                quantity: getTag('QuantityAvailable') || getTag('Quantity') || '1',
+                quantitySold: getTag('QuantitySold') || '0',
+                listingType: getTag('ListingType'),
+                startTime: getTag('StartTime'),
+                endTime: getTag('EndTime'),
+                viewCount: getTag('HitCount') || '0'
+            });
+        }
+
+        // Get total count
+        const totalMatch = xmlText.match(/<TotalNumberOfEntries>(\d+)<\/TotalNumberOfEntries>/);
+        const totalEntries = totalMatch ? parseInt(totalMatch[1]) : items.length;
+
+        const errorMatch = xmlText.match(/<ShortMessage>([^<]*)<\/ShortMessage>/);
+
+        return {
+            items,
+            count: items.length,
+            totalEntries,
+            error: errorMatch ? errorMatch[1] : null
+        };
+    },
+
     async syncItemToEbay(accountId, warehouseItem) {
         const aspects = { 'Warehouse Location': [warehouseItem.FullLocation] };
         if (warehouseItem.ItemSpecifics) {
@@ -1217,6 +1304,13 @@ app.get('/api/ebay/user/:accountId', async (req, res) => {
 app.get('/api/ebay/watchlist/:accountId', async (req, res) => {
     try {
         const result = await ebayAPI.getWatchList(req.params.accountId);
+        res.json(result);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/ebay/listings/:accountId', async (req, res) => {
+    try {
+        const result = await ebayAPI.getActiveListings(req.params.accountId);
         res.json(result);
     } catch (err) { res.status(500).json({ error: err.message }); }
 });

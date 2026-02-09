@@ -267,20 +267,20 @@
             downloadBtn.disabled = true;
 
             try {
-                const res = await fetch(`/api/ebay/inventory/${accountId}`);
+                const res = await fetch(`/api/ebay/listings/${accountId}`);
                 const data = await res.json();
 
                 if (data.error) throw new Error(data.error);
 
-                pulledData = data.inventoryItems || [];
-                document.getElementById('itemCount').textContent = pulledData.length;
+                pulledData = data.items || [];
+                document.getElementById('itemCount').textContent = pulledData.length + (data.totalEntries > pulledData.length ? ` of ${data.totalEntries}` : '');
 
                 const tbody = document.getElementById('inventoryTable');
                 tbody.innerHTML = pulledData.map(item => `
                     <tr>
-                        <td>${item.sku}</td>
-                        <td>${item.product?.title || '-'}</td>
-                        <td>${item.availability?.shipToLocationAvailability?.quantity || 0}</td>
+                        <td>${item.sku || item.itemId}</td>
+                        <td>${item.title || '-'}</td>
+                        <td>${item.quantity || 0}</td>
                     </tr>
                 `).join('') || '<tr><td colspan="3">No items found</td></tr>';
 
