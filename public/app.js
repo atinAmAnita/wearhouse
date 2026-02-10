@@ -1340,7 +1340,7 @@ const EditItem = {
     async autoItemId() {
         try {
             const result = await API.inventory.nextItemId();
-            UI.el('editItemId').value = result.itemId;
+            UI.el('editItemId').value = result.nextId;
             this.updatePreview();
         } catch (err) {
             UI.notify('Failed to generate Item ID', 'error');
@@ -1350,7 +1350,7 @@ const EditItem = {
     async autoLocation() {
         try {
             const result = await API.inventory.nextLocation();
-            UI.el('editLocation').value = result.location;
+            UI.el('editLocation').value = result.nextLocation;
             this.updatePreview();
         } catch (err) {
             UI.notify('Failed to generate Location', 'error');
