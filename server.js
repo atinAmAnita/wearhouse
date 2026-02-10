@@ -832,64 +832,416 @@ const ebayAPI = {
         return { fulfillmentPolicyId, paymentPolicyId, returnPolicyId };
     },
 
-    // Smart two-way sync: reconcile eBay sales with local inventory changes
-    async smartSyncAll(accountId) {
-        const results = { success: [], failed: [], sales: [] };
+    // ============================================
+    // SYNC HELPER FUNCTIONS
+    // ============================================
 
-        // 1. Fetch current eBay inventory
+    // Capture a snapshot of eBay item state
+    captureEbaySnapshot(ebayItem) {
+        return {
+            quantity: parseInt(ebayItem.quantity) || 0,
+            price: parseFloat(ebayItem.price) || 0,
+            title: ebayItem.title || '',
+            description: ebayItem.description || '',
+            condition: ebayItem.condition || '',
+            takenAt: new Date()
+        };
+    },
+
+    // Capture a snapshot from local item (for after pushing to eBay)
+    captureLocalSnapshot(localItem) {
+        return {
+            quantity: localItem.currentQty || 0,
+            price: localItem.price || 0,
+            title: localItem.description || '',
+            description: localItem.description || '',
+            condition: localItem.condition || '',
+            takenAt: new Date()
+        };
+    },
+
+    // Detect changes between current eBay state and stored snapshot
+    detectEbayChanges(currentEbay, snapshot) {
+        const changes = [];
+        if (!snapshot) return [{ field: 'all', reason: 'no_snapshot' }];
+
+        const currentQty = parseInt(currentEbay.quantity) || 0;
+        const currentPrice = parseFloat(currentEbay.price) || 0;
+        const currentTitle = currentEbay.title || '';
+
+        if (currentQty !== snapshot.quantity) {
+            changes.push({ field: 'quantity', old: snapshot.quantity, new: currentQty });
+        }
+        if (currentPrice !== snapshot.price) {
+            changes.push({ field: 'price', old: snapshot.price, new: currentPrice });
+        }
+        if (currentTitle !== snapshot.title) {
+            changes.push({ field: 'title', old: snapshot.title, new: currentTitle });
+        }
+
+        return changes;
+    },
+
+    // Create a local inventory item from eBay data
+    createLocalItemFromEbay(ebayItem) {
+        // Generate SKU from eBay item ID if no SKU
+        const sku = ebayItem.sku || ebayItem.itemId;
+
+        // Generate item code from first 4 chars of SKU
+        const itemCode = sku.substring(0, 4).padStart(4, '0');
+
+        return {
+            sku: sku,
+            itemCode: itemCode,
+            drawerNumber: '000',  // Default - user can update later
+            positionNumber: '00',
+            fullLocation: '000-00',
+            price: parseFloat(ebayItem.price) || 0,
+            currentQty: parseInt(ebayItem.quantity) || 0,
+            description: ebayItem.title || `eBay Item ${sku}`,
+            condition: ebayItem.condition || null,
+            categoryId: ebayItem.categoryId || null,
+            categoryName: ebayItem.categoryName || null,
+            itemSpecifics: {},
+            dateAdded: new Date(),
+            lastModified: new Date(),
+            lastSyncedQty: parseInt(ebayItem.quantity) || 0,
+            ebaySync: {
+                snapshot: this.captureEbaySnapshot(ebayItem),
+                lastSyncTime: new Date(),
+                ebayItemId: ebayItem.itemId || null,
+                status: 'synced'
+            },
+            history: [{
+                date: new Date(),
+                action: 'EBAY_IMPORT',
+                qty: parseInt(ebayItem.quantity) || 0,
+                newTotal: parseInt(ebayItem.quantity) || 0,
+                note: `Imported from eBay listing ${ebayItem.itemId || sku}`
+            }]
+        };
+    },
+
+    // ============================================
+    // PULL FROM EBAY (eBay → Local)
+    // ============================================
+    async pullFromEbay(accountId) {
+        const results = {
+            created: [],
+            updated: [],
+            skipped: [],
+            errors: []
+        };
+
+        // Fetch active listings from eBay (Trading API)
+        const ebayData = await this.getActiveListings(accountId);
+        if (ebayData.error) {
+            throw new Error(ebayData.error);
+        }
+
+        const ebayItems = ebayData.items || [];
+
+        for (const ebayItem of ebayItems) {
+            try {
+                const sku = ebayItem.sku || ebayItem.itemId;
+                const localItem = await data.getItem(sku);
+
+                if (!localItem) {
+                    // Item exists on eBay but not locally - CREATE
+                    const newItem = this.createLocalItemFromEbay(ebayItem);
+                    await data.createItem(newItem);
+                    results.created.push({ sku, title: ebayItem.title, source: 'ebay' });
+                } else {
+                    // Item exists both places - check for changes
+                    const snapshot = localItem.ebaySync?.snapshot;
+                    const lastSyncTime = localItem.ebaySync?.lastSyncTime;
+                    const localModified = localItem.lastModified;
+
+                    const ebayChanges = this.detectEbayChanges(ebayItem, snapshot);
+
+                    if (ebayChanges.length === 0) {
+                        results.skipped.push({ sku, reason: 'No eBay changes' });
+                        continue;
+                    }
+
+                    // Check each changed field
+                    const updates = {};
+                    const changedFields = [];
+
+                    for (const change of ebayChanges) {
+                        if (change.field === 'all') {
+                            // No snapshot - accept all eBay values
+                            updates.price = parseFloat(ebayItem.price) || localItem.price;
+                            updates.description = ebayItem.title || localItem.description;
+                            changedFields.push('price', 'title');
+                            continue;
+                        }
+
+                        const localValue = change.field === 'quantity' ? localItem.currentQty :
+                                          change.field === 'price' ? localItem.price :
+                                          change.field === 'title' ? localItem.description : null;
+                        const snapshotValue = snapshot?.[change.field];
+                        const localChangedSinceSync = localValue !== snapshotValue;
+
+                        if (!localChangedSinceSync) {
+                            // Local hasn't changed this field - accept eBay value
+                            if (change.field === 'quantity') {
+                                // Handle quantity specially - detect sales
+                                const oldQty = snapshot?.quantity ?? localItem.lastSyncedQty ?? localItem.currentQty;
+                                const newQty = change.new;
+                                if (newQty < oldQty) {
+                                    const sold = oldQty - newQty;
+                                    updates.currentQty = Math.max(0, localItem.currentQty - sold);
+                                    await data.addHistory(sku, {
+                                        date: new Date(),
+                                        action: 'EBAY_SALE',
+                                        qty: -sold,
+                                        newTotal: updates.currentQty,
+                                        note: `${sold} sold on eBay (detected during pull)`
+                                    });
+                                }
+                            } else if (change.field === 'price') {
+                                updates.price = change.new;
+                            } else if (change.field === 'title') {
+                                updates.description = change.new;
+                            }
+                            changedFields.push(change.field);
+                        } else {
+                            // Both changed - compare timestamps (newest wins)
+                            const localIsNewer = localModified > (lastSyncTime || new Date(0));
+                            if (!localIsNewer) {
+                                // eBay wins
+                                if (change.field === 'price') updates.price = change.new;
+                                if (change.field === 'title') updates.description = change.new;
+                                changedFields.push(change.field);
+                            }
+                            // If local is newer, we skip (keep local value)
+                        }
+                    }
+
+                    if (Object.keys(updates).length > 0) {
+                        // Update local item
+                        updates.ebaySync = {
+                            snapshot: this.captureEbaySnapshot(ebayItem),
+                            lastSyncTime: new Date(),
+                            ebayItemId: ebayItem.itemId,
+                            status: 'synced'
+                        };
+                        updates.lastSyncedQty = parseInt(ebayItem.quantity) || localItem.currentQty;
+
+                        await data.updateItem(sku, updates);
+                        results.updated.push({ sku, fields: changedFields });
+                    } else {
+                        results.skipped.push({ sku, reason: 'Local changes are newer' });
+                    }
+                }
+            } catch (err) {
+                results.errors.push({ sku: ebayItem.sku || ebayItem.itemId, error: err.message });
+            }
+        }
+
+        return results;
+    },
+
+    // ============================================
+    // PUSH TO EBAY (Local → eBay)
+    // ============================================
+    async pushToEbay(accountId) {
+        const results = {
+            pushed: [],
+            skipped: [],
+            created: [],
+            errors: []
+        };
+
+        // Get all local items
+        const localItems = await data.getAllItems();
+
+        // Fetch current eBay inventory for comparison
         let ebayInventory = {};
         try {
-            const ebayData = await this.getInventoryItems(accountId);
-            if (ebayData.inventoryItems) {
-                ebayData.inventoryItems.forEach(item => {
-                    ebayInventory[item.sku] = item.availability?.shipToLocationAvailability?.quantity || 0;
+            const ebayData = await this.getActiveListings(accountId);
+            if (ebayData.items) {
+                ebayData.items.forEach(item => {
+                    const sku = item.sku || item.itemId;
+                    ebayInventory[sku] = item;
                 });
             }
         } catch (err) {
-            console.log('Could not fetch eBay inventory, proceeding with push-only sync:', err.message);
+            console.log('Could not fetch eBay inventory:', err.message);
+        }
+
+        for (const item of localItems) {
+            try {
+                const sku = item.sku;
+                const fullItem = await data.getItem(sku);
+                if (!fullItem) continue;
+
+                const ebayItem = ebayInventory[sku];
+                const snapshot = fullItem.ebaySync?.snapshot;
+
+                if (!ebayItem) {
+                    // Item not on eBay - create it
+                    await this.syncItemToEbay(accountId, {
+                        SKU: fullItem.sku,
+                        Price: fullItem.price || 0,
+                        Quantity: fullItem.currentQty,
+                        Description: fullItem.description,
+                        FullLocation: fullItem.fullLocation,
+                        Condition: fullItem.condition || 'NEW',
+                        ItemSpecifics: fullItem.itemSpecifics || {}
+                    });
+
+                    // Update sync tracking
+                    await data.updateItem(sku, {
+                        lastSyncedQty: fullItem.currentQty,
+                        ebaySync: {
+                            snapshot: this.captureLocalSnapshot(fullItem),
+                            lastSyncTime: new Date(),
+                            status: 'synced'
+                        }
+                    });
+
+                    results.created.push({ sku, title: fullItem.description });
+                    continue;
+                }
+
+                // Item exists on eBay - check if eBay changed since our snapshot
+                const ebayChanges = this.detectEbayChanges(ebayItem, snapshot);
+                const lastSyncTime = fullItem.ebaySync?.lastSyncTime;
+                const localModified = fullItem.lastModified;
+
+                // Check if we should push
+                let shouldPush = true;
+                const skippedReasons = [];
+
+                for (const change of ebayChanges) {
+                    if (change.field === 'all') continue; // No snapshot, proceed with push
+
+                    // eBay has changes we haven't seen
+                    const localValue = change.field === 'quantity' ? fullItem.currentQty :
+                                      change.field === 'price' ? fullItem.price : null;
+                    const snapshotValue = snapshot?.[change.field];
+                    const localChangedSinceSync = localValue !== snapshotValue;
+
+                    if (!localChangedSinceSync && localValue !== change.new) {
+                        // Local didn't change this field, but eBay did - don't overwrite
+                        skippedReasons.push(`eBay has newer ${change.field}`);
+                    } else if (localChangedSinceSync && localValue !== change.new) {
+                        // Both changed - compare timestamps
+                        const localIsNewer = localModified > (lastSyncTime || new Date(0));
+                        if (!localIsNewer) {
+                            skippedReasons.push(`eBay ${change.field} is newer`);
+                        }
+                    }
+                }
+
+                if (skippedReasons.length > 0 && skippedReasons.length >= ebayChanges.length) {
+                    results.skipped.push({ sku, reason: skippedReasons.join(', ') });
+                    continue;
+                }
+
+                // Safe to push
+                await this.syncItemToEbay(accountId, {
+                    SKU: fullItem.sku,
+                    Price: fullItem.price || 0,
+                    Quantity: fullItem.currentQty,
+                    Description: fullItem.description,
+                    FullLocation: fullItem.fullLocation,
+                    Condition: fullItem.condition || 'NEW',
+                    ItemSpecifics: fullItem.itemSpecifics || {}
+                });
+
+                // Update sync tracking
+                await data.updateItem(sku, {
+                    lastSyncedQty: fullItem.currentQty,
+                    ebaySync: {
+                        snapshot: this.captureLocalSnapshot(fullItem),
+                        lastSyncTime: new Date(),
+                        status: 'synced'
+                    }
+                });
+
+                results.pushed.push({ sku, title: fullItem.description });
+
+            } catch (err) {
+                results.errors.push({ sku: item.sku, error: err.message });
+            }
+        }
+
+        return results;
+    },
+
+    // ============================================
+    // SMART SYNC (Two-Way with Sales Detection)
+    // ============================================
+    async smartSyncAll(accountId) {
+        const results = {
+            imported: [],      // Created locally from eBay
+            exported: [],      // Created on eBay from local
+            updated: [],       // Updated (either direction)
+            sales: [],         // eBay sales detected
+            errors: []
+        };
+
+        // 1. Fetch eBay active listings (Trading API)
+        let ebayInventory = {};
+        try {
+            const ebayData = await this.getActiveListings(accountId);
+            if (ebayData.items) {
+                ebayData.items.forEach(item => {
+                    const sku = item.sku || item.itemId;
+                    ebayInventory[sku] = item;
+                });
+            }
+        } catch (err) {
+            console.log('Could not fetch eBay listings:', err.message);
         }
 
         // 2. Get all local items
         const localItems = await data.getAllItems();
+        const localMap = {};
+        localItems.forEach(item => { localMap[item.sku] = item; });
 
-        // 3. Process each item
-        for (const item of localItems) {
+        const processedSkus = new Set();
+
+        // 3. Process items that exist on BOTH sides
+        for (const [sku, ebayItem] of Object.entries(ebayInventory)) {
+            const localItem = localMap[sku];
+            if (!localItem) continue; // Will handle eBay-only items later
+
+            processedSkus.add(sku);
+
             try {
-                const fullItem = await data.getItem(item.SKU);
+                const fullItem = await data.getItem(sku);
                 if (!fullItem) continue;
 
+                const snapshot = fullItem.ebaySync?.snapshot;
+                const lastSyncTime = fullItem.ebaySync?.lastSyncTime;
+                const snapshotQty = snapshot?.quantity ?? fullItem.lastSyncedQty ?? fullItem.currentQty;
+                const ebayQty = parseInt(ebayItem.quantity) || 0;
                 const localQty = fullItem.currentQty;
-                const lastSyncedQty = fullItem.lastSyncedQty ?? localQty; // Default to current if never synced
-                const ebayQty = ebayInventory[fullItem.sku];
 
                 let finalQty = localQty;
                 let salesDetected = 0;
 
-                // If item exists on eBay, reconcile quantities
-                if (ebayQty !== undefined) {
-                    // Calculate how many sold on eBay since last sync
-                    // sales = lastSyncedQty - ebayQty (if positive)
-                    salesDetected = Math.max(0, lastSyncedQty - ebayQty);
+                // Detect eBay sales (quantity decreased on eBay)
+                if (ebayQty < snapshotQty) {
+                    salesDetected = snapshotQty - ebayQty;
+                    finalQty = Math.max(0, localQty - salesDetected);
 
-                    if (salesDetected > 0) {
-                        // Subtract sales from local quantity
-                        finalQty = Math.max(0, localQty - salesDetected);
+                    await data.addHistory(sku, {
+                        date: new Date(),
+                        action: 'EBAY_SALE',
+                        qty: -salesDetected,
+                        newTotal: finalQty,
+                        note: `${salesDetected} sold on eBay (detected during sync)`
+                    });
 
-                        // Update local inventory with sales deduction
-                        await data.updateItem(fullItem.sku, { currentQty: finalQty, lastSyncedQty: finalQty });
-                        await data.addHistory(fullItem.sku, {
-                            date: new Date(),
-                            action: 'EBAY_SALE',
-                            qty: -salesDetected,
-                            newTotal: finalQty,
-                            note: `${salesDetected} sold on eBay (detected during sync)`
-                        });
-
-                        results.sales.push({ sku: fullItem.sku, sold: salesDetected, newQty: finalQty });
-                    }
+                    results.sales.push({ sku, sold: salesDetected, newQty: finalQty });
                 }
 
-                // Push to eBay with final quantity
+                // Sync to eBay with reconciled quantity
                 await this.syncItemToEbay(accountId, {
                     SKU: fullItem.sku,
                     Price: fullItem.price || 0,
@@ -900,13 +1252,70 @@ const ebayAPI = {
                     ItemSpecifics: fullItem.itemSpecifics || {}
                 });
 
-                // Update lastSyncedQty after successful sync
-                await data.updateItem(fullItem.sku, { lastSyncedQty: finalQty });
+                // Update local with new snapshot
+                await data.updateItem(sku, {
+                    currentQty: finalQty,
+                    lastSyncedQty: finalQty,
+                    ebaySync: {
+                        snapshot: this.captureLocalSnapshot({ ...fullItem, currentQty: finalQty }),
+                        lastSyncTime: new Date(),
+                        ebayItemId: ebayItem.itemId,
+                        status: 'synced'
+                    }
+                });
 
-                results.success.push({ sku: fullItem.sku, qty: finalQty, salesDetected });
+                results.updated.push({ sku, qty: finalQty, salesDetected });
 
             } catch (err) {
-                results.failed.push({ sku: item.SKU, error: err.message });
+                results.errors.push({ sku, error: err.message });
+            }
+        }
+
+        // 4. Handle eBay-only items (import to local)
+        for (const [sku, ebayItem] of Object.entries(ebayInventory)) {
+            if (processedSkus.has(sku)) continue;
+
+            try {
+                const newItem = this.createLocalItemFromEbay(ebayItem);
+                await data.createItem(newItem);
+                results.imported.push({ sku, title: ebayItem.title });
+            } catch (err) {
+                results.errors.push({ sku, error: `Import failed: ${err.message}` });
+            }
+        }
+
+        // 5. Handle local-only items (export to eBay)
+        for (const item of localItems) {
+            if (processedSkus.has(item.sku)) continue;
+            if (ebayInventory[item.sku]) continue; // Already processed
+
+            try {
+                const fullItem = await data.getItem(item.sku);
+                if (!fullItem) continue;
+
+                await this.syncItemToEbay(accountId, {
+                    SKU: fullItem.sku,
+                    Price: fullItem.price || 0,
+                    Quantity: fullItem.currentQty,
+                    Description: fullItem.description,
+                    FullLocation: fullItem.fullLocation,
+                    Condition: fullItem.condition || 'NEW',
+                    ItemSpecifics: fullItem.itemSpecifics || {}
+                });
+
+                await data.updateItem(fullItem.sku, {
+                    lastSyncedQty: fullItem.currentQty,
+                    ebaySync: {
+                        snapshot: this.captureLocalSnapshot(fullItem),
+                        lastSyncTime: new Date(),
+                        status: 'synced'
+                    }
+                });
+
+                results.exported.push({ sku: fullItem.sku, title: fullItem.description });
+
+            } catch (err) {
+                results.errors.push({ sku: item.sku, error: `Export failed: ${err.message}` });
             }
         }
 
@@ -1338,23 +1747,86 @@ app.post('/api/ebay/sync/:accountId/:sku', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Pull from eBay to local inventory
+app.post('/api/ebay/pull/:accountId', async (req, res) => {
+    try {
+        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
+            return res.status(401).json({ error: 'eBay account not connected' });
+        }
+
+        const results = await ebayAPI.pullFromEbay(req.params.accountId);
+
+        const message = `Pulled from eBay: ${results.created.length} imported, ${results.updated.length} updated, ${results.skipped.length} skipped`;
+
+        res.json({
+            message,
+            summary: {
+                created: results.created.length,
+                updated: results.updated.length,
+                skipped: results.skipped.length,
+                errors: results.errors.length
+            },
+            details: results
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Push from local inventory to eBay
+app.post('/api/ebay/push/:accountId', async (req, res) => {
+    try {
+        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
+            return res.status(401).json({ error: 'eBay account not connected' });
+        }
+
+        const results = await ebayAPI.pushToEbay(req.params.accountId);
+
+        const message = `Pushed to eBay: ${results.created.length} created, ${results.pushed.length} updated, ${results.skipped.length} skipped`;
+
+        res.json({
+            message,
+            summary: {
+                created: results.created.length,
+                pushed: results.pushed.length,
+                skipped: results.skipped.length,
+                errors: results.errors.length
+            },
+            details: results
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Smart two-way sync
 app.post('/api/ebay/sync-all/:accountId', async (req, res) => {
     try {
-        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) return res.status(401).json({ error: 'eBay account not connected' });
+        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
+            return res.status(401).json({ error: 'eBay account not connected' });
+        }
 
-        // Use smart two-way sync
         const results = await ebayAPI.smartSyncAll(req.params.accountId);
 
-        let message = `Synced ${results.success.length} items`;
+        let message = `Sync complete: `;
+        const parts = [];
+        if (results.imported.length > 0) parts.push(`${results.imported.length} imported from eBay`);
+        if (results.exported.length > 0) parts.push(`${results.exported.length} exported to eBay`);
+        if (results.updated.length > 0) parts.push(`${results.updated.length} updated`);
         if (results.sales.length > 0) {
             const totalSold = results.sales.reduce((sum, s) => sum + s.sold, 0);
-            message += `, detected ${totalSold} eBay sales`;
+            parts.push(`${totalSold} eBay sales detected`);
         }
-        if (results.failed.length > 0) {
-            message += `, ${results.failed.length} failed`;
-        }
+        if (results.errors.length > 0) parts.push(`${results.errors.length} errors`);
+        message += parts.length > 0 ? parts.join(', ') : 'No changes';
 
-        res.json({ message, results });
+        res.json({
+            message,
+            summary: {
+                imported: results.imported.length,
+                exported: results.exported.length,
+                updated: results.updated.length,
+                sales: results.sales.length,
+                errors: results.errors.length
+            },
+            details: results
+        });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

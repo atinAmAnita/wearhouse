@@ -45,6 +45,22 @@ const inventoryItemSchema = new mongoose.Schema({
     itemSpecifics: { type: mongoose.Schema.Types.Mixed, default: {} },
     dateAdded: { type: Date, default: Date.now },
     lastModified: { type: Date, default: Date.now },
+    lastSyncedQty: { type: Number, default: null },
+    // eBay sync tracking
+    ebaySync: {
+        snapshot: {
+            quantity: Number,
+            price: Number,
+            title: String,
+            description: String,
+            condition: String,
+            takenAt: Date
+        },
+        lastSyncTime: Date,
+        ebayItemId: String,
+        ebayOfferId: String,
+        status: { type: String, default: 'not_synced' }  // 'synced' | 'pending' | 'error' | 'not_synced'
+    },
     history: [{
         date: { type: Date, default: Date.now },
         action: String,
@@ -152,6 +168,22 @@ const inventory = {
         if (!isConnected) return [];
         const items = await InventoryItem.find().select('fullLocation drawerNumber positionNumber').lean();
         return items.map(i => i.drawerNumber + i.positionNumber);
+    },
+
+    async updateEbaySync(sku, syncData) {
+        await connectDB();
+        if (!isConnected) return null;
+        return InventoryItem.findOneAndUpdate(
+            { sku },
+            { $set: { ebaySync: syncData, lastModified: new Date() } },
+            { new: true }
+        ).lean();
+    },
+
+    async getByEbayItemId(ebayItemId) {
+        await connectDB();
+        if (!isConnected) return null;
+        return InventoryItem.findOne({ 'ebaySync.ebayItemId': ebayItemId }).lean();
     }
 };
 

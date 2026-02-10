@@ -69,6 +69,9 @@ const API = {
     ebay: {
         getStatus: () => API.get('/api/ebay/status'),
         getInventory: (accountId) => API.get(`/api/ebay/inventory/${accountId}`),
+        getListings: (accountId) => API.get(`/api/ebay/listings/${accountId}`),
+        pull: (accountId) => API.post(`/api/ebay/pull/${accountId}`),
+        push: (accountId) => API.post(`/api/ebay/push/${accountId}`),
         syncAll: (accountId) => API.post(`/api/ebay/sync-all/${accountId}`),
         publishAll: (accountId) => API.post(`/api/ebay/publish-all/${accountId}`),
         getPolicies: (accountId) => API.get(`/api/ebay/policies/${accountId}`),
@@ -1045,7 +1048,63 @@ const eBay = {
         return UI.el('accountSelect')?.value || '';
     },
 
-    async syncAll() {
+    // Display sync results in the UI
+    showSyncResults(data, operation) {
+        const resultsDiv = UI.el('syncResults');
+        UI.show(resultsDiv);
+
+        // Update summary cards
+        const summary = data.summary || {};
+        UI.setHTML('importedCount', summary.imported || summary.created || 0);
+        UI.setHTML('exportedCount', summary.exported || summary.pushed || 0);
+        UI.setHTML('updatedCount', summary.updated || 0);
+        UI.setHTML('salesCount', summary.sales || 0);
+
+        // Show/hide errors card
+        const errorsCard = UI.el('errorsCard');
+        if (summary.errors > 0) {
+            UI.setHTML('errorsCount', summary.errors);
+            errorsCard.style.display = 'block';
+        } else {
+            errorsCard.style.display = 'none';
+        }
+
+        // Build details HTML
+        const details = data.details || {};
+        let detailsHtml = `<p style="margin-bottom: 10px;"><strong>${operation}:</strong> ${data.message}</p>`;
+
+        if (details.imported?.length > 0 || details.created?.length > 0) {
+            const items = details.imported || details.created || [];
+            detailsHtml += `<details><summary style="cursor: pointer; font-weight: bold; color: #2e7d32;">Imported from eBay (${items.length})</summary><ul>${items.map(i => `<li>${i.sku}: ${i.title || ''}</li>`).join('')}</ul></details>`;
+        }
+
+        if (details.exported?.length > 0 || details.pushed?.length > 0) {
+            const items = details.exported || details.pushed || [];
+            detailsHtml += `<details><summary style="cursor: pointer; font-weight: bold; color: #1565c0;">Exported to eBay (${items.length})</summary><ul>${items.map(i => `<li>${i.sku}: ${i.title || ''}</li>`).join('')}</ul></details>`;
+        }
+
+        if (details.updated?.length > 0) {
+            detailsHtml += `<details><summary style="cursor: pointer; font-weight: bold; color: #e65100;">Updated (${details.updated.length})</summary><ul>${details.updated.map(i => `<li>${i.sku}: ${i.fields?.join(', ') || 'synced'}</li>`).join('')}</ul></details>`;
+        }
+
+        if (details.sales?.length > 0) {
+            const totalSold = details.sales.reduce((sum, s) => sum + s.sold, 0);
+            detailsHtml += `<details open><summary style="cursor: pointer; font-weight: bold; color: #c2185b;">eBay Sales Detected (${totalSold} items sold)</summary><ul>${details.sales.map(s => `<li>${s.sku}: ${s.sold} sold (qty now ${s.newQty})</li>`).join('')}</ul></details>`;
+        }
+
+        if (details.errors?.length > 0) {
+            detailsHtml += `<details open><summary style="cursor: pointer; font-weight: bold; color: #c62828;">Errors (${details.errors.length})</summary><ul>${details.errors.map(e => `<li>${e.sku}: ${e.error}</li>`).join('')}</ul></details>`;
+        }
+
+        if (details.skipped?.length > 0) {
+            detailsHtml += `<details><summary style="cursor: pointer; color: #666;">Skipped (${details.skipped.length})</summary><ul>${details.skipped.map(s => `<li>${s.sku}: ${s.reason || 'No changes'}</li>`).join('')}</ul></details>`;
+        }
+
+        UI.setHTML('syncDetails', detailsHtml);
+    },
+
+    // Pull from eBay to local
+    async pull() {
         const accountId = eBay.getSelectedAccount();
         if (!accountId) {
             UI.notify('Please select an eBay account first', 'error');
@@ -1053,48 +1112,85 @@ const eBay = {
         }
 
         const account = State.ebayAccounts.find(a => a.id === accountId);
-        if (!UI.confirm(`Sync all inventory items to "${account?.name}"?`)) return;
+        if (!UI.confirm(`Pull listings from "${account?.name}" to local inventory?`)) return;
 
-        UI.notify('Syncing items to eBay...', 'info');
+        UI.notify('Pulling from eBay...', 'info');
+        const btn = UI.el('pullBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Pulling...'; }
+
+        try {
+            const data = await API.ebay.pull(accountId);
+            eBay.showSyncResults(data, 'Pull from eBay');
+            UI.notify(data.message, data.summary?.errors > 0 ? 'info' : 'success');
+            eBay.loadStatus();
+            Inventory.load();
+        } catch (err) {
+            UI.notify(err.message, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.innerHTML = '<span style="font-size: 1.2em;">&#8595;</span> Pull from eBay'; }
+        }
+    },
+
+    // Push local to eBay
+    async push() {
+        const accountId = eBay.getSelectedAccount();
+        if (!accountId) {
+            UI.notify('Please select an eBay account first', 'error');
+            return;
+        }
+
+        const account = State.ebayAccounts.find(a => a.id === accountId);
+        if (!UI.confirm(`Push local inventory to "${account?.name}" on eBay?`)) return;
+
+        UI.notify('Pushing to eBay...', 'info');
+        const btn = UI.el('pushBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Pushing...'; }
+
+        try {
+            const data = await API.ebay.push(accountId);
+            eBay.showSyncResults(data, 'Push to eBay');
+            UI.notify(data.message, data.summary?.errors > 0 ? 'info' : 'success');
+            eBay.loadStatus();
+            eBay.loadInventory();
+        } catch (err) {
+            UI.notify(err.message, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.innerHTML = '<span style="font-size: 1.2em;">&#8593;</span> Push to eBay'; }
+        }
+    },
+
+    // Smart two-way sync
+    async sync() {
+        const accountId = eBay.getSelectedAccount();
+        if (!accountId) {
+            UI.notify('Please select an eBay account first', 'error');
+            return;
+        }
+
+        const account = State.ebayAccounts.find(a => a.id === accountId);
+        if (!UI.confirm(`Smart sync with "${account?.name}"? This will:\n- Import new eBay listings\n- Export new local items\n- Detect eBay sales\n- Sync changes both ways`)) return;
+
+        UI.notify('Running smart sync...', 'info');
+        const btn = UI.el('syncBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Syncing...'; }
 
         try {
             const data = await API.ebay.syncAll(accountId);
-
-            const resultsDiv = UI.el('syncResults');
-            UI.show(resultsDiv);
-
-            let html = `
-                <p><strong>Account:</strong> ${account?.name}</p>
-                <p><strong>Successful:</strong> ${data.results.success.length} items</p>
-            `;
-
-            // Show eBay sales detected
-            if (data.results.sales?.length > 0) {
-                const totalSold = data.results.sales.reduce((sum, s) => sum + s.sold, 0);
-                html += `
-                    <p><strong style="color: var(--info);">eBay Sales Detected:</strong> ${totalSold} items sold</p>
-                    <ul style="color: var(--info);">${data.results.sales.map(s => `<li>${s.sku}: ${s.sold} sold (qty now ${s.newQty})</li>`).join('')}</ul>
-                `;
-            }
-
-            if (data.results.failed.length > 0) {
-                html += `
-                    <p><strong style="color: var(--danger);">Failed:</strong> ${data.results.failed.length} items</p>
-                    <ul style="color: var(--danger);">${data.results.failed.map(f => `<li>${f.sku}: ${f.error}</li>`).join('')}</ul>
-                `;
-            }
-
-            const syncSummaryEl = resultsDiv.querySelector('.sync-summary');
-            if (syncSummaryEl) syncSummaryEl.innerHTML = html;
-            UI.notify(data.message, data.results.failed.length ? 'info' : 'success');
+            eBay.showSyncResults(data, 'Smart Sync');
+            UI.notify(data.message, data.summary?.errors > 0 ? 'info' : 'success');
             eBay.loadStatus();
-            // Also refresh the eBay inventory list and local inventory
             eBay.loadInventory();
             Inventory.load();
-
         } catch (err) {
             UI.notify(err.message, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.innerHTML = '<span style="font-size: 1.2em;">&#8596;</span> Smart Sync'; }
         }
+    },
+
+    // Legacy function for backwards compatibility
+    async syncAll() {
+        return eBay.sync();
     },
 
     async publishAll() {
