@@ -209,24 +209,9 @@
                 </div>
 
                 <div class="sync-actions">
-                    <button class="btn btn-secondary" onclick="eBay.pull()" id="pullBtn">
-                        <span style="font-size: 1.2em;">&#8595;</span> Pull from eBay
-                    </button>
-                    <button class="btn btn-primary btn-large" onclick="eBay.sync()" id="syncBtn">
-                        <span style="font-size: 1.2em;">&#8596;</span> Smart Sync
-                    </button>
-                    <button class="btn btn-secondary" onclick="eBay.push()" id="pushBtn">
-                        <span style="font-size: 1.2em;">&#8593;</span> Push to eBay
-                    </button>
-                </div>
-                <div style="text-align: center; color: var(--text-muted); font-size: 0.85rem; margin-top: 15px; line-height: 1.6;">
-                    <p><strong>Pull</strong> = Import eBay listings to local inventory</p>
-                    <p><strong>Sync</strong> = Smart merge (detects eBay sales, syncs both ways)</p>
-                    <p><strong>Push</strong> = Export local inventory to eBay</p>
-                </div>
-                <div class="sync-actions" style="margin-top: 15px;">
-                    <button class="btn btn-outline" onclick="loadEbayInventory()">View eBay Inventory</button>
-                    <button class="btn btn-outline" onclick="publishAllToEbay()">Publish All Listings</button>
+                    <button class="btn btn-secondary" onclick="eBay.pull()" id="pullBtn">Pull from eBay</button>
+                    <button class="btn btn-primary" onclick="eBay.sync()" id="syncBtn">Sync</button>
+                    <button class="btn btn-secondary" onclick="eBay.push()" id="pushBtn">Push to eBay</button>
                 </div>
 
                 <!-- Connected Accounts List -->
@@ -237,29 +222,7 @@
 
                 <div id="syncResults" class="sync-results hidden">
                     <h3>Sync Results</h3>
-                    <div class="sync-summary-cards" style="display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 20px;">
-                        <div class="summary-card" id="importedCard" style="background: #e8f5e9; padding: 15px 20px; border-radius: 8px; text-align: center; min-width: 100px;">
-                            <div style="font-size: 1.5rem; font-weight: bold; color: #2e7d32;" id="importedCount">0</div>
-                            <div style="font-size: 0.85rem; color: #388e3c;">Imported</div>
-                        </div>
-                        <div class="summary-card" id="exportedCard" style="background: #e3f2fd; padding: 15px 20px; border-radius: 8px; text-align: center; min-width: 100px;">
-                            <div style="font-size: 1.5rem; font-weight: bold; color: #1565c0;" id="exportedCount">0</div>
-                            <div style="font-size: 0.85rem; color: #1976d2;">Exported</div>
-                        </div>
-                        <div class="summary-card" id="updatedCard" style="background: #fff3e0; padding: 15px 20px; border-radius: 8px; text-align: center; min-width: 100px;">
-                            <div style="font-size: 1.5rem; font-weight: bold; color: #e65100;" id="updatedCount">0</div>
-                            <div style="font-size: 0.85rem; color: #f57c00;">Updated</div>
-                        </div>
-                        <div class="summary-card" id="salesCard" style="background: #fce4ec; padding: 15px 20px; border-radius: 8px; text-align: center; min-width: 100px;">
-                            <div style="font-size: 1.5rem; font-weight: bold; color: #c2185b;" id="salesCount">0</div>
-                            <div style="font-size: 0.85rem; color: #d81b60;">Sales Detected</div>
-                        </div>
-                        <div class="summary-card" id="errorsCard" style="background: #ffebee; padding: 15px 20px; border-radius: 8px; text-align: center; min-width: 100px; display: none;">
-                            <div style="font-size: 1.5rem; font-weight: bold; color: #c62828;" id="errorsCount">0</div>
-                            <div style="font-size: 0.85rem; color: #d32f2f;">Errors</div>
-                        </div>
-                    </div>
-                    <div class="sync-details" id="syncDetails" style="background: #f5f5f5; padding: 15px; border-radius: 8px; max-height: 300px; overflow-y: auto;"></div>
+                    <div class="sync-summary"></div>
                 </div>
 
                 <div id="ebayInventory" class="ebay-inventory hidden">
