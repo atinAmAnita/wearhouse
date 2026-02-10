@@ -1337,7 +1337,29 @@ const ebayAPI = {
 
 app.get('/api/inventory', async (req, res) => {
     try {
-        res.json(await data.getAllItems());
+        let items = await data.getAllItems();
+        const filter = req.query.filter;
+
+        if (filter === 'needs-sku') {
+            // Items that need a proper warehouse SKU:
+            // - SKU is not exactly 9 digits
+            // - SKU contains non-numeric characters
+            // - Location is 000-00 (default from eBay import)
+            items = items.filter(item => {
+                const sku = item.SKU || '';
+                const isValid9Digits = /^\d{9}$/.test(sku);
+                const hasDefaultLocation = item.FullLocation === '000-00';
+                return !isValid9Digits || hasDefaultLocation;
+            });
+        } else if (filter === 'ebay-imports') {
+            // Items imported from eBay
+            items = items.filter(item => {
+                // Check raw item for ebaySync (need to get full item)
+                return item.FullLocation === '000-00' || (item.SKU && item.SKU.length > 9);
+            });
+        }
+
+        res.json(items);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1519,6 +1541,87 @@ app.put('/api/inventory/:sku/advanced', async (req, res) => {
         if (itemSpecifics !== undefined) updates.itemSpecifics = itemSpecifics;
         await data.updateItem(req.params.sku, updates);
         res.json({ message: 'Advanced settings updated', item: { SKU: item.sku, CategoryId: updates.categoryId, CategoryName: updates.categoryName, Condition: updates.condition, ItemSpecifics: updates.itemSpecifics } });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Change SKU endpoint - creates new item with new SKU, copies all data, deletes old
+app.post('/api/inventory/:sku/change-sku', async (req, res) => {
+    try {
+        const oldSku = req.params.sku;
+        const { newSku, description } = req.body;
+
+        // Validate new SKU format (must be 9 digits)
+        if (!newSku || !/^\d{9}$/.test(newSku)) {
+            return res.status(400).json({ error: 'New SKU must be exactly 9 digits' });
+        }
+
+        // Get the old item
+        const oldItem = await data.getItem(oldSku);
+        if (!oldItem) {
+            return res.status(404).json({ error: 'Item not found' });
+        }
+
+        // Check if new SKU already exists
+        const existingItem = await data.getItem(newSku);
+        if (existingItem) {
+            return res.status(400).json({ error: 'An item with this SKU already exists' });
+        }
+
+        // Parse new SKU components
+        const newItemCode = newSku.substring(0, 4);
+        const newLocation = newSku.substring(4);
+        const newDrawer = newLocation.substring(0, 3);
+        const newPosition = newLocation.substring(3);
+        const newFullLocation = `${newDrawer}-${newPosition}`;
+
+        // Create new item with new SKU, copying all data
+        const newItem = {
+            sku: newSku,
+            itemCode: newItemCode,
+            drawerNumber: newDrawer,
+            positionNumber: newPosition,
+            fullLocation: newFullLocation,
+            price: oldItem.price,
+            currentQty: oldItem.currentQty,
+            description: description !== undefined ? description : oldItem.description,
+            categoryId: oldItem.categoryId,
+            categoryName: oldItem.categoryName,
+            condition: oldItem.condition,
+            itemSpecifics: oldItem.itemSpecifics || {},
+            dateAdded: oldItem.dateAdded,
+            lastModified: new Date(),
+            lastSyncedQty: oldItem.lastSyncedQty,
+            ebaySync: oldItem.ebaySync || {},  // Preserve eBay sync data (ebayItemId stays linked)
+            history: [
+                ...(oldItem.history || []),
+                {
+                    date: new Date(),
+                    action: 'SKU_CHANGE',
+                    qty: 0,
+                    newTotal: oldItem.currentQty,
+                    note: `SKU changed from ${oldSku} to ${newSku}`
+                }
+            ]
+        };
+
+        // Create the new item
+        await data.createItem(newItem);
+
+        // Delete the old item
+        await data.deleteItem(oldSku);
+
+        // Generate barcode for new SKU
+        const barcode = await generateBarcode(newSku);
+
+        res.json({
+            message: 'SKU changed successfully',
+            oldSku,
+            newSku,
+            item: formatItem(newItem),
+            barcode
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

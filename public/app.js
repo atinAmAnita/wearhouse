@@ -53,7 +53,7 @@ const API = {
 
     // Inventory endpoints
     inventory: {
-        getAll: () => API.get('/api/inventory'),
+        getAll: (filter = 'all') => API.get(`/api/inventory?filter=${filter}`),
         getItem: (sku) => API.get(`/api/lookup/${sku}`),
         getHistory: (sku) => API.get(`/api/inventory/${sku}/history`),
         add: (data) => API.post('/api/inventory', data),
@@ -478,9 +478,14 @@ const Inventory = {
         UI.el('searchInventory').addEventListener('input', Inventory.filter);
     },
 
+    applyFilter() {
+        Inventory.load();
+    },
+
     async load() {
         try {
-            const items = await API.inventory.getAll();
+            const filter = UI.el('inventoryFilter')?.value || 'all';
+            const items = await API.inventory.getAll(filter);
             const tbody = document.querySelector('#inventoryTable tbody');
             tbody.innerHTML = '';
 
@@ -1286,6 +1291,138 @@ const eBay = {
 };
 
 // ============================================
+// EDIT ITEM - SKU Change Functionality
+// ============================================
+const EditItem = {
+    currentSku: null,
+
+    open() {
+        if (!State.currentItem) {
+            UI.notify('No item selected', 'error');
+            return;
+        }
+        this.currentSku = State.currentItem.SKU;
+
+        // Populate current info
+        UI.el('editCurrentSku').textContent = this.currentSku;
+        UI.el('editDescription').value = State.currentItem.Description || '';
+
+        // Show eBay reference if exists
+        const ebayItemId = State.currentItem.ebaySync?.ebayItemId;
+        if (ebayItemId) {
+            UI.el('editEbayItemId').textContent = ebayItemId;
+            UI.show('editEbayRef');
+        } else {
+            UI.hide('editEbayRef');
+        }
+
+        // Pre-fill if valid warehouse format (9 digits)
+        if (/^\d{9}$/.test(this.currentSku)) {
+            UI.el('editItemId').value = this.currentSku.substring(0, 4);
+            UI.el('editLocation').value = this.currentSku.substring(4);
+        } else {
+            UI.el('editItemId').value = '';
+            UI.el('editLocation').value = '';
+        }
+
+        this.updatePreview();
+        UI.hide('editValidation');
+        UI.modal.open('editItemModal');
+    },
+
+    updatePreview() {
+        const itemId = UI.el('editItemId').value || '';
+        const location = UI.el('editLocation').value || '';
+        const preview = (itemId.padEnd(4, '-')) + '+' + (location.padEnd(5, '-'));
+        UI.el('editSkuPreview').textContent = preview;
+    },
+
+    async autoItemId() {
+        try {
+            const result = await API.inventory.nextItemId();
+            UI.el('editItemId').value = result.itemId;
+            this.updatePreview();
+        } catch (err) {
+            UI.notify('Failed to generate Item ID', 'error');
+        }
+    },
+
+    async autoLocation() {
+        try {
+            const result = await API.inventory.nextLocation();
+            UI.el('editLocation').value = result.location;
+            this.updatePreview();
+        } catch (err) {
+            UI.notify('Failed to generate Location', 'error');
+        }
+    },
+
+    async save() {
+        const itemId = UI.el('editItemId').value;
+        const location = UI.el('editLocation').value;
+        const description = UI.el('editDescription').value;
+
+        // Validate
+        if (!/^\d{4}$/.test(itemId)) {
+            this.showError('Item ID must be exactly 4 digits');
+            return;
+        }
+        if (!/^\d{5}$/.test(location)) {
+            this.showError('Location must be exactly 5 digits');
+            return;
+        }
+
+        const newSku = itemId + location;
+
+        // If SKU unchanged, just update description
+        if (newSku === this.currentSku) {
+            try {
+                await API.inventory.update(this.currentSku, { description });
+                UI.notify('Description updated', 'success');
+                this.close();
+                await Lookup.search();
+                return;
+            } catch (err) {
+                this.showError(err.message);
+                return;
+            }
+        }
+
+        // Confirm SKU change
+        if (!confirm(`Change SKU from "${this.currentSku}" to "${newSku}"?\n\nThis will update the item in the database.`)) {
+            return;
+        }
+
+        try {
+            UI.el('editSaveBtn').disabled = true;
+            await API.post(`/api/inventory/${encodeURIComponent(this.currentSku)}/change-sku`, { newSku, description });
+            UI.notify('Item updated successfully', 'success');
+            this.close();
+
+            // Refresh with new SKU
+            UI.el('skuInput').value = newSku;
+            await Lookup.search();
+            Inventory.load();
+        } catch (err) {
+            this.showError(err.message);
+        } finally {
+            UI.el('editSaveBtn').disabled = false;
+        }
+    },
+
+    showError(msg) {
+        const el = UI.el('editValidation');
+        el.textContent = msg;
+        UI.show('editValidation');
+    },
+
+    close() {
+        UI.modal.close('editItemModal');
+        UI.hide('editValidation');
+    }
+};
+
+// ============================================
 // GLOBAL FUNCTIONS - For onclick handlers
 // ============================================
 const generateNextItemId = () => Generate.itemId();
@@ -1356,9 +1493,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // Modal close handlers
     document.addEventListener('click', (e) => {
         if (e.target.id === 'historyModal') History.close();
+        if (e.target.id === 'editItemModal') EditItem.close();
     });
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') History.close();
+        if (e.key === 'Escape') {
+            History.close();
+            EditItem.close();
+        }
     });
 
     // Initial focus
