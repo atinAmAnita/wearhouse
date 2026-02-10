@@ -1311,9 +1311,9 @@ const EditItem = {
         const ebayItemId = State.currentItem.ebaySync?.ebayItemId;
         if (ebayItemId) {
             UI.el('editEbayItemId').textContent = ebayItemId;
-            UI.show('editEbayRef');
+            UI.show(UI.el('editEbayRef'));
         } else {
-            UI.hide('editEbayRef');
+            UI.hide(UI.el('editEbayRef'));
         }
 
         // Pre-fill if valid warehouse format (9 digits)
@@ -1326,7 +1326,7 @@ const EditItem = {
         }
 
         this.updatePreview();
-        UI.hide('editValidation');
+        UI.hide(UI.el('editValidation'));
         UI.modal.open('editItemModal');
     },
 
@@ -1413,12 +1413,12 @@ const EditItem = {
     showError(msg) {
         const el = UI.el('editValidation');
         el.textContent = msg;
-        UI.show('editValidation');
+        UI.show(el);
     },
 
     close() {
         UI.modal.close('editItemModal');
-        UI.hide('editValidation');
+        UI.hide(UI.el('editValidation'));
     }
 };
 

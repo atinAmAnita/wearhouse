@@ -1495,7 +1495,7 @@ app.get('/api/lookup/:sku', async (req, res) => {
         const item = await data.getItem(req.params.sku);
         if (!item) return res.status(404).json({ error: 'Item not found' });
         const barcode = await generateBarcode(item.sku);
-        res.json({ item: { SKU: item.sku, ItemCode: item.itemCode, DrawerNumber: item.drawerNumber, PositionNumber: item.positionNumber, FullLocation: item.fullLocation, Price: item.price || 0, Quantity: item.currentQty, Description: item.description, DateAdded: item.dateAdded, LastModified: item.lastModified }, barcode });
+        res.json({ item: { SKU: item.sku, ItemCode: item.itemCode, DrawerNumber: item.drawerNumber, PositionNumber: item.positionNumber, FullLocation: item.fullLocation, Price: item.price || 0, Quantity: item.currentQty, Description: item.description, DateAdded: item.dateAdded, LastModified: item.lastModified, ebaySync: item.ebaySync || null }, barcode });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
