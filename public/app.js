@@ -474,55 +474,193 @@ const Lookup = {
 // INVENTORY - Table management
 // ============================================
 const Inventory = {
+    // State
+    allItems: [],
+    filteredItems: [],
+    currentPage: 1,
+    pageSize: 20,
+    sortField: 'dateAdded',
+    sortDir: 'desc',
+    searchQuery: '',
+
     init() {
-        UI.el('searchInventory').addEventListener('input', Inventory.filter);
+        // No longer need the old event listener
     },
 
     applyFilter() {
-        Inventory.load();
+        this.currentPage = 1;
+        this.load();
+    },
+
+    applySort() {
+        const sortValue = UI.el('inventorySort')?.value || 'dateAdded-desc';
+        const [field, dir] = sortValue.split('-');
+        this.sortField = field;
+        this.sortDir = dir;
+        this.render();
+    },
+
+    sortBy(field) {
+        // Toggle direction if same field, otherwise default to asc
+        if (this.sortField === field) {
+            this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+            this.sortField = field;
+            this.sortDir = 'asc';
+        }
+        // Update dropdown to match
+        const sortValue = `${field}-${this.sortDir}`;
+        const sortSelect = UI.el('inventorySort');
+        if (sortSelect) {
+            // Find matching option or keep current
+            for (let opt of sortSelect.options) {
+                if (opt.value === sortValue) {
+                    sortSelect.value = sortValue;
+                    break;
+                }
+            }
+        }
+        this.render();
+    },
+
+    changePageSize() {
+        this.pageSize = parseInt(UI.el('inventoryPageSize')?.value) || 20;
+        this.currentPage = 1;
+        this.render();
+    },
+
+    search() {
+        this.searchQuery = (UI.el('searchInventory')?.value || '').toLowerCase();
+        this.currentPage = 1;
+        this.render();
+    },
+
+    prevPage() {
+        if (this.currentPage > 1) {
+            this.currentPage--;
+            this.render();
+        }
+    },
+
+    nextPage() {
+        const totalPages = Math.ceil(this.getDisplayItems().length / this.pageSize);
+        if (this.currentPage < totalPages) {
+            this.currentPage++;
+            this.render();
+        }
+    },
+
+    getDisplayItems() {
+        let items = [...this.allItems];
+
+        // Apply search filter
+        if (this.searchQuery) {
+            items = items.filter(item => {
+                const searchStr = `${item.SKU} ${item.FullLocation} ${item.Description || ''}`.toLowerCase();
+                return searchStr.includes(this.searchQuery);
+            });
+        }
+
+        // Apply sorting
+        items.sort((a, b) => {
+            let aVal, bVal;
+            switch (this.sortField) {
+                case 'sku':
+                    aVal = a.SKU || '';
+                    bVal = b.SKU || '';
+                    break;
+                case 'location':
+                    aVal = a.FullLocation || '';
+                    bVal = b.FullLocation || '';
+                    break;
+                case 'price':
+                    aVal = parseFloat(a.Price) || 0;
+                    bVal = parseFloat(b.Price) || 0;
+                    break;
+                case 'quantity':
+                    aVal = parseInt(a.Quantity) || 0;
+                    bVal = parseInt(b.Quantity) || 0;
+                    break;
+                case 'dateAdded':
+                default:
+                    aVal = new Date(a.DateAdded || 0);
+                    bVal = new Date(b.DateAdded || 0);
+            }
+            if (aVal < bVal) return this.sortDir === 'asc' ? -1 : 1;
+            if (aVal > bVal) return this.sortDir === 'asc' ? 1 : -1;
+            return 0;
+        });
+
+        return items;
     },
 
     async load() {
         try {
             const filter = UI.el('inventoryFilter')?.value || 'all';
-            const items = await API.inventory.getAll(filter);
-            const tbody = document.querySelector('#inventoryTable tbody');
-            tbody.innerHTML = '';
-
-            let totalQty = 0;
-
-            items.forEach(item => {
-                totalQty += parseInt(item.Quantity) || 0;
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td>${item.SKU}</td>
-                    <td>${item.FullLocation}</td>
-                    <td>$${parseFloat(item.Price || 0).toFixed(2)}</td>
-                    <td>${item.Quantity}</td>
-                    <td>${item.Description || '-'}</td>
-                    <td>${UI.formatDate(item.DateAdded)}</td>
-                    <td class="action-cell">
-                        ${UI.actionBtn('History', `History.show('${item.SKU}')`)}
-                        ${UI.actionBtn('View', `Inventory.view('${item.SKU}')`)}
-                        ${UI.actionBtn('Delete', `Inventory.delete('${item.SKU}')`, 'danger')}
-                    </td>
-                `;
-                tbody.appendChild(row);
-            });
-
-            UI.setText('totalItems', `Total: ${items.length} items`);
-            UI.setText('totalQuantity', `Total quantity: ${totalQty}`);
-
+            this.allItems = await API.inventory.getAll(filter);
+            this.render();
         } catch (err) {
             UI.notify(err.message, 'error');
         }
     },
 
-    filter(e) {
-        const query = e.target.value.toLowerCase();
-        document.querySelectorAll('#inventoryTable tbody tr').forEach(row => {
-            row.style.display = row.textContent.toLowerCase().includes(query) ? '' : 'none';
+    render() {
+        const displayItems = this.getDisplayItems();
+        const totalPages = Math.ceil(displayItems.length / this.pageSize) || 1;
+
+        // Ensure current page is valid
+        if (this.currentPage > totalPages) this.currentPage = totalPages;
+        if (this.currentPage < 1) this.currentPage = 1;
+
+        const startIdx = (this.currentPage - 1) * this.pageSize;
+        const endIdx = startIdx + this.pageSize;
+        const pageItems = displayItems.slice(startIdx, endIdx);
+
+        const tbody = document.querySelector('#inventoryTable tbody');
+        tbody.innerHTML = '';
+
+        let totalQty = 0;
+        this.allItems.forEach(item => {
+            totalQty += parseInt(item.Quantity) || 0;
         });
+
+        pageItems.forEach(item => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${item.SKU}</td>
+                <td>${item.FullLocation}</td>
+                <td>$${parseFloat(item.Price || 0).toFixed(2)}</td>
+                <td>${item.Quantity}</td>
+                <td>${item.Description || '-'}</td>
+                <td>${UI.formatDate(item.DateAdded)}</td>
+                <td class="action-cell">
+                    ${UI.actionBtn('History', `History.show('${item.SKU}')`)}
+                    ${UI.actionBtn('View', `Inventory.view('${item.SKU}')`)}
+                    ${UI.actionBtn('Delete', `Inventory.delete('${item.SKU}')`, 'danger')}
+                </td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        // Update stats
+        UI.setText('totalItems', `${this.allItems.length} items`);
+        UI.setText('totalQuantity', `${totalQty} total qty`);
+
+        // Update pagination
+        UI.setText('pageInfo', `Page ${this.currentPage} of ${totalPages}`);
+        UI.el('prevPageBtn').disabled = this.currentPage <= 1;
+        UI.el('nextPageBtn').disabled = this.currentPage >= totalPages;
+
+        // Update sort indicators on headers
+        document.querySelectorAll('#inventoryTable th.sortable').forEach(th => {
+            th.classList.remove('asc', 'desc');
+        });
+        const headerMap = { sku: 0, location: 1, price: 2, quantity: 3, dateAdded: 5 };
+        const idx = headerMap[this.sortField];
+        if (idx !== undefined) {
+            const th = document.querySelectorAll('#inventoryTable th.sortable')[Object.keys(headerMap).indexOf(this.sortField)];
+            if (th) th.classList.add(this.sortDir);
+        }
     },
 
     view(sku) {

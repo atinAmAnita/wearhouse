@@ -623,16 +623,118 @@ td {
 
 .inventory-stats {
     display: flex;
+    gap: 15px;
+    align-items: center;
+}
+
+.inventory-footer {
+    display: flex;
     justify-content: space-between;
-    padding: 18px 20px;
+    align-items: center;
+    padding: 15px 20px;
     background: var(--bg-card);
     border: 1px solid var(--border-color);
     border-top: none;
+}
+
+.stat-badge {
+    display: inline-block;
+    padding: 8px 16px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
     font-weight: 600;
-    color: var(--text-secondary);
+    color: var(--accent-primary);
     text-transform: uppercase;
+    font-size: 0.85rem;
+    letter-spacing: 0.5px;
+}
+
+/* Styled Select Dropdowns (Dark Theme) */
+.styled-select {
+    padding: 12px 35px 12px 14px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    border-radius: 0;
+    font-size: 0.95rem;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ff6b2b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    background-size: 16px;
+    min-width: 140px;
+}
+
+.styled-select:hover {
+    border-color: var(--accent-primary);
+}
+
+.styled-select:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.styled-select option {
+    background: var(--bg-panel);
+    color: var(--text-primary);
+    padding: 10px;
+}
+
+/* Pagination */
+.pagination {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.pagination span {
+    color: var(--text-secondary);
     font-size: 0.9rem;
-    letter-spacing: 1px;
+}
+
+.btn-sm {
+    padding: 6px 14px;
+    font-size: 0.85rem;
+}
+
+/* Sortable Table Headers */
+th.sortable {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+}
+
+th.sortable:hover {
+    color: var(--accent-primary);
+}
+
+th.sortable::after {
+    content: '';
+    display: inline-block;
+    margin-left: 6px;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid var(--text-muted);
+    vertical-align: middle;
+    opacity: 0.5;
+}
+
+th.sortable.asc::after {
+    border-top: none;
+    border-bottom: 5px solid var(--accent-primary);
+    opacity: 1;
+}
+
+th.sortable.desc::after {
+    border-top: 5px solid var(--accent-primary);
+    opacity: 1;
 }
 
 /* Export Cards */
