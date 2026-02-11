@@ -711,11 +711,14 @@ const ebayAPI = {
                 return m ? m[1] : '';
             };
 
+            // For fixed-price items, price can be in StartPrice, BuyItNowPrice, or CurrentPrice
+            const price = getTag('StartPrice') || getTag('BuyItNowPrice') || getTag('CurrentPrice') || '0';
+
             items.push({
                 itemId: getTag('ItemID'),
                 sku: getTag('SKU') || getTag('ItemID'),
                 title: getTag('Title'),
-                price: getTag('CurrentPrice'),
+                price: price,
                 currency: itemXml.match(/currencyID="([^"]+)"/)?.[1] || 'USD',
                 quantity: getTag('QuantityAvailable') || getTag('Quantity') || '1',
                 quantitySold: getTag('QuantitySold') || '0',
