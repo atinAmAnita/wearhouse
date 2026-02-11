@@ -336,21 +336,46 @@ const ebayAPI = {
 
     async refreshAccessToken(accountId) {
         const account = await data.getAccount(accountId);
-        if (!account?.tokens?.refresh_token) throw new Error('No refresh token');
+        if (!account?.tokens?.refresh_token) throw new Error('No refresh token - please reconnect eBay account');
 
         const credentials = Buffer.from(`${config.ebay.clientId}:${config.ebay.clientSecret}`).toString('base64');
-        const response = await fetch(`${this.endpoints.api}/identity/v1/oauth2/token`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': `Basic ${credentials}` },
-            body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: account.tokens.refresh_token, scope: config.ebay.scopes.join(' ') })
-        });
 
-        if (!response.ok) throw new Error(`Token refresh failed: ${await response.text()}`);
-        const tokenData = await response.json();
+        try {
+            const response = await fetch(`${this.endpoints.api}/identity/v1/oauth2/token`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': `Basic ${credentials}` },
+                body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: account.tokens.refresh_token, scope: config.ebay.scopes.join(' ') })
+            });
 
-        const tokens = { ...account.tokens, access_token: tokenData.access_token, expires_at: Date.now() + (tokenData.expires_in * 1000) };
-        await data.saveAccount(accountId, { tokens });
-        return tokens;
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error('Token refresh failed:', errorText);
+                // If refresh token is invalid/expired, clear it so user knows to reconnect
+                if (errorText.includes('invalid_grant') || errorText.includes('expired')) {
+                    await data.saveAccount(accountId, { tokens: { ...account.tokens, access_token: null, expires_at: 0 } });
+                    throw new Error('eBay session expired - please reconnect your account');
+                }
+                throw new Error(`Token refresh failed: ${errorText}`);
+            }
+
+            const tokenData = await response.json();
+
+            // Save new tokens - including new refresh_token if eBay provides one
+            const tokens = {
+                ...account.tokens,
+                access_token: tokenData.access_token,
+                expires_at: Date.now() + (tokenData.expires_in * 1000),
+                // Use new refresh_token if provided, otherwise keep the old one
+                refresh_token: tokenData.refresh_token || account.tokens.refresh_token
+            };
+
+            await data.saveAccount(accountId, { tokens });
+            console.log(`Refreshed eBay token for account ${accountId}, expires in ${tokenData.expires_in}s`);
+            return tokens;
+        } catch (err) {
+            console.error('Error refreshing eBay token:', err.message);
+            throw err;
+        }
     },
 
     async apiRequest(accountId, method, path, body = null) {
