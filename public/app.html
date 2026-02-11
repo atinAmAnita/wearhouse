@@ -142,29 +142,19 @@
 
         <!-- Inventory Tab -->
         <section id="inventory" class="tab-content">
-            <h2>Full Inventory</h2>
+            <div class="inventory-header">
+                <h2>Full Inventory</h2>
+                <div class="inventory-stats">
+                    <span id="totalItems" class="stat-badge">0 items</span>
+                    <span id="totalQuantity" class="stat-badge">0 total qty</span>
+                </div>
+            </div>
             <div class="inventory-controls">
                 <input type="text" id="searchInventory" placeholder="Search inventory..." oninput="Inventory.search()">
                 <select id="inventoryFilter" class="styled-select" onchange="Inventory.applyFilter()">
                     <option value="all">All Items</option>
                     <option value="needs-sku">Needs SKU</option>
                     <option value="ebay-imports">eBay Imports</option>
-                </select>
-                <select id="inventorySort" class="styled-select" onchange="Inventory.applySort()">
-                    <option value="dateAdded-desc">Newest First</option>
-                    <option value="dateAdded-asc">Oldest First</option>
-                    <option value="sku-asc">SKU (A-Z)</option>
-                    <option value="sku-desc">SKU (Z-A)</option>
-                    <option value="price-desc">Price (High-Low)</option>
-                    <option value="price-asc">Price (Low-High)</option>
-                    <option value="quantity-desc">Qty (High-Low)</option>
-                    <option value="quantity-asc">Qty (Low-High)</option>
-                </select>
-                <select id="inventoryPageSize" class="styled-select" onchange="Inventory.changePageSize()">
-                    <option value="20">20 per page</option>
-                    <option value="30">30 per page</option>
-                    <option value="50">50 per page</option>
-                    <option value="100">100 per page</option>
                 </select>
                 <button class="btn btn-secondary" onclick="Inventory.load()">Refresh</button>
             </div>
@@ -185,10 +175,12 @@
                 </table>
             </div>
             <div class="inventory-footer">
-                <div class="inventory-stats">
-                    <span id="totalItems" class="stat-badge">0 items</span>
-                    <span id="totalQuantity" class="stat-badge">0 total qty</span>
-                </div>
+                <select id="inventoryPageSize" class="styled-select" onchange="Inventory.changePageSize()">
+                    <option value="20">20 per page</option>
+                    <option value="30">30 per page</option>
+                    <option value="50">50 per page</option>
+                    <option value="100">100 per page</option>
+                </select>
                 <div class="pagination">
                     <button class="btn btn-sm" onclick="Inventory.prevPage()" id="prevPageBtn" disabled>Prev</button>
                     <span id="pageInfo">Page 1 of 1</span>

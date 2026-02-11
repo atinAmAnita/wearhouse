@@ -562,6 +562,17 @@ header h1 {
 }
 
 /* Inventory Table */
+.inventory-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.inventory-header h2 {
+    margin: 0;
+}
+
 .inventory-controls {
     display: flex;
     gap: 15px;
