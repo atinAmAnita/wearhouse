@@ -15,15 +15,15 @@
         </header>
 
         <nav class="tabs">
-            <button class="tab-btn active" data-tab="add">Add Item</button>
-            <button class="tab-btn" data-tab="lookup">Scan/Lookup</button>
+            <!-- HIDDEN FOR DEV: <button class="tab-btn" data-tab="add">Add Item</button> -->
+            <button class="tab-btn active" data-tab="lookup">Scan/Lookup</button>
             <button class="tab-btn" data-tab="inventory">Inventory</button>
             <button class="tab-btn" data-tab="ebay">eBay Sync</button>
             <button class="tab-btn" data-tab="export">Export</button>
         </nav>
 
-        <!-- Add Item Tab -->
-        <section id="add" class="tab-content active">
+        <!-- Add Item Tab - HIDDEN FOR DEV -->
+        <section id="add" class="tab-content">
             <h2>Add Item</h2>
             <form id="addItemForm">
                 <div class="form-row">
@@ -88,7 +88,7 @@
         </section>
 
         <!-- Lookup Tab -->
-        <section id="lookup" class="tab-content">
+        <section id="lookup" class="tab-content active">
             <h2>Scan or Lookup Item</h2>
             <form id="lookupForm">
                 <div class="form-group">
@@ -231,8 +231,10 @@
 
                 <div class="sync-actions">
                     <button class="btn btn-secondary" onclick="eBay.pull()" id="pullBtn">Pull from eBay</button>
+                    <!-- HIDDEN FOR DEV: Sync and Push buttons disabled until sync logic is safe
                     <button class="btn btn-primary" onclick="eBay.sync()" id="syncBtn">Sync</button>
                     <button class="btn btn-secondary" onclick="eBay.push()" id="pushBtn">Push to eBay</button>
+                    -->
                 </div>
 
                 <!-- Connected Accounts List -->
