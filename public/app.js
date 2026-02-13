@@ -1203,13 +1203,15 @@ const eBay = {
         UI.setHTML('updatedCount', summary.updated || 0);
         UI.setHTML('salesCount', summary.sales || 0);
 
-        // Show/hide errors card
+        // Show/hide errors card (if element exists)
         const errorsCard = UI.el('errorsCard');
-        if (summary.errors > 0) {
-            UI.setHTML('errorsCount', summary.errors);
-            errorsCard.style.display = 'block';
-        } else {
-            errorsCard.style.display = 'none';
+        if (errorsCard) {
+            if (summary.errors > 0) {
+                UI.setHTML('errorsCount', summary.errors);
+                errorsCard.style.display = 'block';
+            } else {
+                errorsCard.style.display = 'none';
+            }
         }
 
         // Build details HTML
