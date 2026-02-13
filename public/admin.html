@@ -261,6 +261,14 @@
             <div id="accountsList">
                 <div class="no-accounts">Loading...</div>
             </div>
+
+            <!-- Danger Zone -->
+            <h2 class="section-title" style="margin-top: 50px; color: #ff1744;">Danger Zone</h2>
+            <div class="danger-zone" style="background: rgba(255, 23, 68, 0.1); border: 1px solid #ff1744; padding: 25px; margin-bottom: 25px;">
+                <h3 style="color: #ff1744; margin-top: 0;">Clear All Inventory</h3>
+                <p style="color: var(--text-secondary); margin-bottom: 15px;">This will permanently delete ALL items from your inventory. This action cannot be undone.</p>
+                <button class="btn btn-danger" onclick="clearAllInventory()" style="background: #ff1744;">Clear All Inventory</button>
+            </div>
         </div>
     </div>
 
@@ -459,6 +467,33 @@ ruName: 'your-runame'</pre>
                     loadAccounts();
                 } else {
                     const data = await response.json();
+                    showNotification(data.error, 'error');
+                }
+            } catch (err) {
+                showNotification('Error: ' + err.message, 'error');
+            }
+        }
+
+        // Clear all inventory
+        async function clearAllInventory() {
+            const confirmText = prompt('Type "DELETE ALL" to confirm clearing all inventory:');
+            if (confirmText !== 'DELETE ALL') {
+                showNotification('Cancelled - text did not match', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/admin/inventory/clear', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: adminPassword })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showNotification(`Cleared ${data.deleted} items from inventory`, 'success');
+                } else {
                     showNotification(data.error, 'error');
                 }
             } catch (err) {

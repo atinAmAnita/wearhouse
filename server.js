@@ -2130,6 +2130,26 @@ app.delete('/api/admin/ebay/account/:accountId', async (req, res) => {
     res.json(removed ? { message: 'Account removed' } : { error: 'Account not found' });
 });
 
+// Clear all inventory
+app.delete('/api/admin/inventory/clear', async (req, res) => {
+    if (req.body.password !== config.adminPassword) return res.status(401).json({ error: 'Invalid password' });
+    try {
+        const items = await data.getAllItems();
+        const count = items.length;
+
+        // Delete all items
+        for (const item of items) {
+            await data.deleteItem(item.sku);
+        }
+
+        console.log(`Admin cleared all inventory: ${count} items deleted`);
+        res.json({ message: 'Inventory cleared', deleted: count });
+    } catch (err) {
+        console.error('Error clearing inventory:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Health check
 app.get('/api/health', (req, res) => {
     res.json({
