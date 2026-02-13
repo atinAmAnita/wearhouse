@@ -117,6 +117,12 @@ const inventory = {
         return InventoryItem.findOne({ fullLocation }).lean();
     },
 
+    async getByEbayId(ebayItemId) {
+        await connectDB();
+        if (!isConnected) return null;
+        return InventoryItem.findOne({ 'ebaySync.ebayItemId': ebayItemId }).lean();
+    },
+
     async create(itemData) {
         await connectDB();
         if (!isConnected) return null;

@@ -103,6 +103,13 @@ const data = {
         return Object.values(localInventory.items).find(i => i.fullLocation === fullLocation) || null;
     },
 
+    async getItemByEbayId(ebayItemId) {
+        if (!USE_LOCAL_DB) {
+            return db.inventory.getByEbayId(ebayItemId);
+        }
+        return Object.values(localInventory.items).find(i => i.ebaySync?.ebayItemId === ebayItemId) || null;
+    },
+
     async createItem(itemData) {
         if (!USE_LOCAL_DB) {
             return db.inventory.create(itemData);
@@ -976,7 +983,17 @@ const ebayAPI = {
         for (const ebayItem of ebayItems) {
             try {
                 const sku = ebayItem.sku || ebayItem.itemId;
-                const localItem = await data.getItem(sku);
+
+                // Try to find existing item by SKU first, then by eBay ItemID
+                let localItem = await data.getItem(sku);
+
+                // If not found by SKU, try to find by eBay ItemID (in case SKU was changed locally)
+                if (!localItem && ebayItem.itemId) {
+                    localItem = await data.getItemByEbayId(ebayItem.itemId);
+                    if (localItem) {
+                        console.log(`Found item by eBay ItemID ${ebayItem.itemId}, local SKU: ${localItem.sku}`);
+                    }
+                }
 
                 if (!localItem) {
                     // Item exists on eBay but not locally - CREATE
@@ -1308,6 +1325,14 @@ const ebayAPI = {
             if (processedSkus.has(sku)) continue;
 
             try {
+                // Check if item already exists locally by eBay ItemID (in case SKU was changed)
+                const existingByEbayId = ebayItem.itemId ? await data.getItemByEbayId(ebayItem.itemId) : null;
+                if (existingByEbayId) {
+                    console.log(`Skipping import - item already exists locally with SKU ${existingByEbayId.sku} (eBay ID: ${ebayItem.itemId})`);
+                    results.skipped.push({ sku, reason: 'Already exists (matched by eBay ItemID)' });
+                    continue;
+                }
+
                 const newItem = this.createLocalItemFromEbay(ebayItem);
                 await data.createItem(newItem);
                 results.imported.push({ sku, title: ebayItem.title });
