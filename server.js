@@ -491,7 +491,8 @@ const ebayAPI = {
         for (const match of itemMatches) {
             const itemXml = match[1];
             const getTag = (tag) => {
-                const m = itemXml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
+                // Handle tags with attributes like <CurrentPrice currencyID="USD">19.99</CurrentPrice>
+                const m = itemXml.match(new RegExp(`<${tag}[^>]*>([^<]*)</${tag}>`));
                 return m ? m[1] : '';
             };
 
@@ -568,7 +569,8 @@ const ebayAPI = {
         const xmlText = await response.text();
 
         const getTag = (tag) => {
-            const m = xmlText.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
+            // Handle tags with or without attributes
+            const m = xmlText.match(new RegExp(`<${tag}[^>]*>([^<]*)</${tag}>`));
             return m ? m[1] : null;
         };
 
@@ -643,7 +645,8 @@ const ebayAPI = {
         for (const match of itemMatches) {
             const itemXml = match[1];
             const getTag = (tag) => {
-                const m = itemXml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
+                // Handle tags with attributes like <CurrentPrice currencyID="USD">19.99</CurrentPrice>
+                const m = itemXml.match(new RegExp(`<${tag}[^>]*>([^<]*)</${tag}>`));
                 return m ? m[1] : '';
             };
 
@@ -732,7 +735,8 @@ const ebayAPI = {
         for (const match of itemMatches) {
             const itemXml = match[1];
             const getTag = (tag) => {
-                const m = itemXml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
+                // Handle tags with attributes like <StartPrice currencyID="USD">19.99</StartPrice>
+                const m = itemXml.match(new RegExp(`<${tag}[^>]*>([^<]*)</${tag}>`));
                 return m ? m[1] : '';
             };
 
