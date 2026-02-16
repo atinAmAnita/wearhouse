@@ -283,7 +283,10 @@ const ebayAPI = {
     async isAccountAuthenticated(accountId) {
         const account = await data.getAccount(accountId);
         if (!account?.tokens?.access_token) return false;
-        if (account.tokens.expires_at && Date.now() >= account.tokens.expires_at) return false;
+        // If access token expired but refresh token exists, we can still authenticate (will auto-refresh)
+        if (account.tokens.expires_at && Date.now() >= account.tokens.expires_at) {
+            return !!account.tokens.refresh_token;
+        }
         return true;
     },
 
