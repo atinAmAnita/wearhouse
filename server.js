@@ -2132,16 +2132,16 @@ app.delete('/api/admin/ebay/account/:accountId', async (req, res) => {
     res.json(removed ? { message: 'Account removed' } : { error: 'Account not found' });
 });
 
-// Clear all inventory
-app.delete('/api/admin/inventory/clear', async (req, res) => {
+// Clear all inventory (using POST because Vercel has issues with DELETE + body)
+app.post('/api/admin/inventory/clear', async (req, res) => {
     if (req.body.password !== config.adminPassword) return res.status(401).json({ error: 'Invalid password' });
     try {
         const items = await data.getAllItems();
         const count = items.length;
 
-        // Delete all items
+        // Delete all items (items are formatted with uppercase SKU)
         for (const item of items) {
-            await data.deleteItem(item.sku);
+            await data.deleteItem(item.SKU);
         }
 
         console.log(`Admin cleared all inventory: ${count} items deleted`);
