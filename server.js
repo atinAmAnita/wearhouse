@@ -2181,6 +2181,48 @@ app.get('/api/health', (req, res) => {
     });
 });
 
+// Keep tokens alive - ping this endpoint regularly (e.g., every hour via UptimeRobot/cron)
+app.get('/api/keep-alive', async (req, res) => {
+    const results = { refreshed: [], failed: [], skipped: [] };
+
+    try {
+        const accounts = await data.getAllAccounts();
+
+        for (const account of accounts) {
+            if (!account.hasValidToken) {
+                results.skipped.push({ id: account.id, reason: 'no valid token' });
+                continue;
+            }
+
+            try {
+                // Get full account data to check token expiry
+                const fullAccount = await data.getAccount(account.id);
+
+                // Refresh if token expires in less than 1 hour
+                const oneHour = 60 * 60 * 1000;
+                if (fullAccount?.tokens?.expires_at && (fullAccount.tokens.expires_at - Date.now() < oneHour)) {
+                    await ebayAPI.refreshAccessToken(account.id);
+                    results.refreshed.push(account.id);
+                    console.log(`Keep-alive: Refreshed token for ${account.name}`);
+                } else {
+                    results.skipped.push({ id: account.id, reason: 'token still valid' });
+                }
+            } catch (err) {
+                results.failed.push({ id: account.id, error: err.message });
+                console.error(`Keep-alive: Failed to refresh ${account.id}:`, err.message);
+            }
+        }
+
+        res.json({
+            status: 'ok',
+            timestamp: new Date().toISOString(),
+            results
+        });
+    } catch (err) {
+        res.status(500).json({ status: 'error', error: err.message });
+    }
+});
+
 // ============================================
 // START SERVER
 // ============================================
