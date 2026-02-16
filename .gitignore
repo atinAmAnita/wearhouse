@@ -26,3 +26,5 @@ config.js
 inventory_backup.xlsx
 
 .vercel
+.env.prod
+.env.production

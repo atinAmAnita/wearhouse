@@ -801,6 +801,75 @@ const ebayAPI = {
         };
     },
 
+    // Revise price/quantity on an eBay listing using Trading API
+    async reviseInventoryStatus(accountId, itemId, updates) {
+        let account = await data.getAccount(accountId);
+        if (!account) throw new Error('Account not found');
+
+        if (!(await this.isAccountAuthenticated(accountId))) {
+            if (account.tokens?.refresh_token) {
+                await this.refreshAccessToken(accountId);
+                account = await data.getAccount(accountId);
+            } else {
+                throw new Error('Account not authenticated');
+            }
+        }
+
+        const token = account.tokens.access_token;
+        const tradingEndpoint = config.ebay.environment === 'production'
+            ? 'https://api.ebay.com/ws/api.dll'
+            : 'https://api.sandbox.ebay.com/ws/api.dll';
+
+        let inventoryStatusXml = '';
+        if (updates.price !== null && updates.price !== undefined) {
+            inventoryStatusXml += `<StartPrice>${updates.price}</StartPrice>`;
+        }
+        if (updates.quantity !== null && updates.quantity !== undefined) {
+            inventoryStatusXml += `<Quantity>${updates.quantity}</Quantity>`;
+        }
+
+        const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
+<ReviseInventoryStatusRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+    <RequesterCredentials>
+        <eBayAuthToken>${token}</eBayAuthToken>
+    </RequesterCredentials>
+    <InventoryStatus>
+        <ItemID>${itemId}</ItemID>
+        ${inventoryStatusXml}
+    </InventoryStatus>
+    <ErrorLanguage>en_US</ErrorLanguage>
+    <WarningLevel>High</WarningLevel>
+</ReviseInventoryStatusRequest>`;
+
+        const response = await fetch(tradingEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'text/xml',
+                'X-EBAY-API-SITEID': '0',
+                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+                'X-EBAY-API-CALL-NAME': 'ReviseInventoryStatus',
+                'X-EBAY-API-IAF-TOKEN': token
+            },
+            body: xmlRequest
+        });
+
+        const xmlText = await response.text();
+
+        // Check for errors
+        const errorMatch = xmlText.match(/<ShortMessage>([^<]*)<\/ShortMessage>/);
+        const ackMatch = xmlText.match(/<Ack>([^<]*)<\/Ack>/);
+
+        if (ackMatch && (ackMatch[1] === 'Failure' || ackMatch[1] === 'PartialFailure')) {
+            throw new Error(errorMatch ? errorMatch[1] : 'Failed to update eBay listing');
+        }
+
+        return {
+            success: true,
+            itemId,
+            updates
+        };
+    },
+
     async syncItemToEbay(accountId, warehouseItem) {
         const aspects = { 'Warehouse Location': [warehouseItem.FullLocation] };
         if (warehouseItem.ItemSpecifics) {
@@ -2010,6 +2079,248 @@ app.post('/api/ebay/sync-all/:accountId', async (req, res) => {
             details: results
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Compare local inventory with eBay listings - find differences
+app.get('/api/ebay/compare/:accountId', async (req, res) => {
+    try {
+        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
+            return res.status(401).json({ error: 'eBay account not connected' });
+        }
+
+        const differences = [];
+        const localOnly = [];
+        const ebayOnly = [];
+
+        // Get all local items
+        const localItems = await data.getAllItems();
+        const localMap = new Map();
+        localItems.forEach(item => {
+            localMap.set(item.sku, item);
+        });
+
+        // Get eBay listings
+        const ebayData = await ebayAPI.getActiveListings(req.params.accountId);
+        if (ebayData.error) {
+            throw new Error(ebayData.error);
+        }
+
+        const ebayMap = new Map();
+        (ebayData.items || []).forEach(item => {
+            const sku = item.sku || item.itemId;
+            ebayMap.set(sku, item);
+        });
+
+        // Compare items that exist in both
+        for (const [sku, localItem] of localMap) {
+            const ebayItem = ebayMap.get(sku);
+
+            if (!ebayItem) {
+                // Item exists locally but not on eBay
+                localOnly.push({
+                    sku,
+                    title: localItem.description || localItem.itemCode,
+                    localPrice: localItem.price || 0,
+                    localQty: localItem.currentQty || 0,
+                    location: localItem.fullLocation
+                });
+            } else {
+                // Compare price and quantity
+                const localPrice = parseFloat(localItem.price) || 0;
+                const ebayPrice = parseFloat(ebayItem.price) || 0;
+                const localQty = parseInt(localItem.currentQty) || 0;
+                const ebayQty = parseInt(ebayItem.quantity) || 0;
+
+                const priceDiff = Math.abs(localPrice - ebayPrice) > 0.01;
+                const qtyDiff = localQty !== ebayQty;
+
+                if (priceDiff || qtyDiff) {
+                    differences.push({
+                        sku,
+                        title: ebayItem.title || localItem.description,
+                        ebayItemId: ebayItem.itemId,
+                        local: {
+                            price: localPrice,
+                            quantity: localQty
+                        },
+                        ebay: {
+                            price: ebayPrice,
+                            quantity: ebayQty
+                        },
+                        priceDiff,
+                        qtyDiff
+                    });
+                }
+            }
+        }
+
+        // Find items on eBay but not in local
+        for (const [sku, ebayItem] of ebayMap) {
+            if (!localMap.has(sku)) {
+                ebayOnly.push({
+                    sku,
+                    ebayItemId: ebayItem.itemId,
+                    title: ebayItem.title,
+                    ebayPrice: parseFloat(ebayItem.price) || 0,
+                    ebayQty: parseInt(ebayItem.quantity) || 0
+                });
+            }
+        }
+
+        res.json({
+            summary: {
+                totalLocal: localItems.length,
+                totalEbay: ebayData.items?.length || 0,
+                differences: differences.length,
+                localOnly: localOnly.length,
+                ebayOnly: ebayOnly.length
+            },
+            differences,
+            localOnly,
+            ebayOnly
+        });
+
+    } catch (err) {
+        console.error('Compare error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Resolve a difference - update local or push to eBay
+app.post('/api/ebay/resolve/:accountId', async (req, res) => {
+    try {
+        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
+            return res.status(401).json({ error: 'eBay account not connected' });
+        }
+
+        const { sku, action, field } = req.body;
+        // action: 'use_local' or 'use_ebay'
+        // field: 'price', 'quantity', or 'both'
+
+        if (!sku || !action) {
+            return res.status(400).json({ error: 'SKU and action required' });
+        }
+
+        const localItem = await data.getItem(sku);
+        const ebayData = await ebayAPI.getActiveListings(req.params.accountId);
+        const ebayItem = ebayData.items?.find(i => (i.sku || i.itemId) === sku);
+
+        if (action === 'use_local') {
+            // Push local values to eBay
+            if (!localItem) {
+                return res.status(404).json({ error: 'Local item not found' });
+            }
+            if (!ebayItem) {
+                return res.status(404).json({ error: 'eBay item not found - cannot update' });
+            }
+
+            // Use ReviseInventoryStatus to update price/quantity on eBay
+            const result = await ebayAPI.reviseInventoryStatus(req.params.accountId, ebayItem.itemId, {
+                price: field === 'quantity' ? null : localItem.price,
+                quantity: field === 'price' ? null : localItem.currentQty
+            });
+
+            res.json({ message: 'Updated eBay to match local', result });
+
+        } else if (action === 'use_ebay') {
+            // Update local with eBay values
+            if (!ebayItem) {
+                return res.status(404).json({ error: 'eBay item not found' });
+            }
+
+            const updates = {};
+            if (field === 'price' || field === 'both') {
+                updates.price = parseFloat(ebayItem.price) || 0;
+            }
+            if (field === 'quantity' || field === 'both') {
+                updates.currentQty = parseInt(ebayItem.quantity) || 0;
+            }
+
+            if (localItem) {
+                await data.updateItem(sku, updates);
+                res.json({ message: 'Updated local to match eBay', updates });
+            } else {
+                // Create new local item from eBay
+                const newItem = {
+                    sku: sku,
+                    itemCode: sku,
+                    description: ebayItem.title,
+                    price: parseFloat(ebayItem.price) || 0,
+                    currentQty: parseInt(ebayItem.quantity) || 0,
+                    ebaySync: {
+                        ebayItemId: ebayItem.itemId,
+                        lastSynced: new Date().toISOString()
+                    }
+                };
+                await data.createItem(newItem);
+                res.json({ message: 'Created local item from eBay', item: newItem });
+            }
+
+        } else {
+            res.status(400).json({ error: 'Invalid action. Use "use_local" or "use_ebay"' });
+        }
+
+    } catch (err) {
+        console.error('Resolve error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Bulk resolve - apply action to multiple items
+app.post('/api/ebay/resolve-bulk/:accountId', async (req, res) => {
+    try {
+        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
+            return res.status(401).json({ error: 'eBay account not connected' });
+        }
+
+        const { items, action } = req.body;
+        // items: array of { sku, field }
+        // action: 'use_local' or 'use_ebay'
+
+        if (!items || !Array.isArray(items) || !action) {
+            return res.status(400).json({ error: 'Items array and action required' });
+        }
+
+        const results = { success: [], failed: [] };
+
+        for (const item of items) {
+            try {
+                const localItem = await data.getItem(item.sku);
+                const ebayData = await ebayAPI.getActiveListings(req.params.accountId);
+                const ebayItem = ebayData.items?.find(i => (i.sku || i.itemId) === item.sku);
+
+                if (action === 'use_local' && localItem && ebayItem) {
+                    await ebayAPI.reviseInventoryStatus(req.params.accountId, ebayItem.itemId, {
+                        price: localItem.price,
+                        quantity: localItem.currentQty
+                    });
+                    results.success.push(item.sku);
+                } else if (action === 'use_ebay' && ebayItem) {
+                    const updates = {
+                        price: parseFloat(ebayItem.price) || 0,
+                        currentQty: parseInt(ebayItem.quantity) || 0
+                    };
+                    if (localItem) {
+                        await data.updateItem(item.sku, updates);
+                    }
+                    results.success.push(item.sku);
+                } else {
+                    results.failed.push({ sku: item.sku, error: 'Item not found' });
+                }
+            } catch (err) {
+                results.failed.push({ sku: item.sku, error: err.message });
+            }
+        }
+
+        res.json({
+            message: `Resolved ${results.success.length} items, ${results.failed.length} failed`,
+            results
+        });
+
+    } catch (err) {
+        console.error('Bulk resolve error:', err);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.get('/api/ebay/categories/search/:accountId', async (req, res) => {

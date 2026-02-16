@@ -231,10 +231,94 @@
 
                 <div class="sync-actions">
                     <button class="btn btn-secondary" onclick="eBay.pull()" id="pullBtn">Pull from eBay</button>
+                    <button class="btn btn-warning" onclick="eBay.compare()" id="compareBtn" style="background: #ff9800; border-color: #ff9800;">Compare with eBay</button>
                     <!-- HIDDEN FOR DEV: Sync and Push buttons disabled until sync logic is safe
                     <button class="btn btn-primary" onclick="eBay.sync()" id="syncBtn">Sync</button>
                     <button class="btn btn-secondary" onclick="eBay.push()" id="pushBtn">Push to eBay</button>
                     -->
+                </div>
+
+                <!-- Comparison Results -->
+                <div id="comparisonResults" class="comparison-results hidden" style="margin-top: 30px;">
+                    <h3 style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+                        <span>Comparison Results</span>
+                        <button class="btn btn-sm" onclick="document.getElementById('comparisonResults').classList.add('hidden')" style="background: #666; padding: 5px 15px;">Close</button>
+                    </h3>
+
+                    <!-- Summary -->
+                    <div id="comparisonSummary" class="comparison-summary" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px;"></div>
+
+                    <!-- Bulk Actions -->
+                    <div id="bulkActions" class="bulk-actions hidden" style="margin-bottom: 20px; padding: 15px; background: #1a1a2e; border-radius: 8px;">
+                        <span style="margin-right: 15px;">Bulk Actions:</span>
+                        <button class="btn btn-sm" onclick="eBay.bulkResolve('use_local')" style="background: #4caf50; margin-right: 10px;">Use All Local Values</button>
+                        <button class="btn btn-sm" onclick="eBay.bulkResolve('use_ebay')" style="background: #2196f3;">Use All eBay Values</button>
+                    </div>
+
+                    <!-- Differences Table -->
+                    <div id="differencesSection" class="hidden">
+                        <h4 style="color: #ff9800; margin-bottom: 10px;">Differences Found</h4>
+                        <div class="table-container" style="max-height: 400px; overflow-y: auto;">
+                            <table id="differencesTable" style="width: 100%;">
+                                <thead>
+                                    <tr>
+                                        <th>SKU</th>
+                                        <th>Title</th>
+                                        <th>Field</th>
+                                        <th>Local</th>
+                                        <th>eBay</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Local Only -->
+                    <div id="localOnlySection" class="hidden" style="margin-top: 20px;">
+                        <h4 style="color: #4caf50; margin-bottom: 10px;">In Local Only (not on eBay)</h4>
+                        <div class="table-container" style="max-height: 300px; overflow-y: auto;">
+                            <table id="localOnlyTable" style="width: 100%;">
+                                <thead>
+                                    <tr>
+                                        <th>SKU</th>
+                                        <th>Title</th>
+                                        <th>Price</th>
+                                        <th>Qty</th>
+                                        <th>Location</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- eBay Only -->
+                    <div id="ebayOnlySection" class="hidden" style="margin-top: 20px;">
+                        <h4 style="color: #2196f3; margin-bottom: 10px;">On eBay Only (not in local)</h4>
+                        <div class="table-container" style="max-height: 300px; overflow-y: auto;">
+                            <table id="ebayOnlyTable" style="width: 100%;">
+                                <thead>
+                                    <tr>
+                                        <th>SKU</th>
+                                        <th>Title</th>
+                                        <th>Price</th>
+                                        <th>Qty</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- All Matched -->
+                    <div id="allMatchedMessage" class="hidden" style="text-align: center; padding: 40px; color: #4caf50;">
+                        <div style="font-size: 48px; margin-bottom: 10px;">✓</div>
+                        <h3>All items match!</h3>
+                        <p>Your local inventory is in sync with eBay.</p>
+                    </div>
                 </div>
 
                 <!-- Connected Accounts List -->

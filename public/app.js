@@ -1427,6 +1427,233 @@ const eBay = {
         } catch (err) {
             UI.notify(err.message, 'error');
         }
+    },
+
+    // Compare local inventory with eBay
+    comparisonData: null,
+
+    async compare() {
+        const accountId = eBay.getSelectedAccount();
+        if (!accountId) {
+            UI.notify('Please select an eBay account first', 'error');
+            return;
+        }
+
+        UI.notify('Comparing with eBay...', 'info');
+        const btn = UI.el('compareBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Comparing...'; }
+
+        try {
+            const data = await fetch(`/api/ebay/compare/${accountId}`).then(r => r.json());
+
+            if (data.error) throw new Error(data.error);
+
+            eBay.comparisonData = data;
+            eBay.showComparisonResults(data);
+            UI.notify(`Comparison complete: ${data.summary.differences} differences found`, 'success');
+
+        } catch (err) {
+            UI.notify(err.message, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = 'Compare with eBay'; }
+        }
+    },
+
+    showComparisonResults(data) {
+        const resultsDiv = UI.el('comparisonResults');
+        UI.show(resultsDiv);
+
+        // Summary cards
+        const summaryHtml = `
+            <div style="background: #1a1a2e; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 24px; font-weight: bold;">${data.summary.totalLocal}</div>
+                <div style="color: #888;">Local Items</div>
+            </div>
+            <div style="background: #1a1a2e; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 24px; font-weight: bold;">${data.summary.totalEbay}</div>
+                <div style="color: #888;">eBay Listings</div>
+            </div>
+            <div style="background: #1a1a2e; padding: 15px; border-radius: 8px; text-align: center; border: 2px solid ${data.summary.differences > 0 ? '#ff9800' : '#4caf50'};">
+                <div style="font-size: 24px; font-weight: bold; color: ${data.summary.differences > 0 ? '#ff9800' : '#4caf50'};">${data.summary.differences}</div>
+                <div style="color: #888;">Differences</div>
+            </div>
+            <div style="background: #1a1a2e; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 24px; font-weight: bold; color: #4caf50;">${data.summary.localOnly}</div>
+                <div style="color: #888;">Local Only</div>
+            </div>
+            <div style="background: #1a1a2e; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 24px; font-weight: bold; color: #2196f3;">${data.summary.ebayOnly}</div>
+                <div style="color: #888;">eBay Only</div>
+            </div>
+        `;
+        UI.setHTML('comparisonSummary', summaryHtml);
+
+        // Show/hide bulk actions
+        const bulkActions = UI.el('bulkActions');
+        if (data.differences.length > 0) {
+            UI.show(bulkActions);
+        } else {
+            UI.hide(bulkActions);
+        }
+
+        // Differences table
+        const diffSection = UI.el('differencesSection');
+        const diffTbody = document.querySelector('#differencesTable tbody');
+        if (data.differences.length > 0) {
+            UI.show(diffSection);
+            diffTbody.innerHTML = data.differences.map(d => {
+                const rows = [];
+                if (d.priceDiff) {
+                    rows.push(`
+                        <tr>
+                            <td>${d.sku}</td>
+                            <td>${d.title || '-'}</td>
+                            <td><span style="color: #ff9800;">Price</span></td>
+                            <td>$${d.local.price.toFixed(2)}</td>
+                            <td>$${d.ebay.price.toFixed(2)}</td>
+                            <td>
+                                <button class="btn btn-sm" onclick="eBay.resolve('${d.sku}', 'use_local', 'price')" style="background: #4caf50; margin-right: 5px;">Use Local</button>
+                                <button class="btn btn-sm" onclick="eBay.resolve('${d.sku}', 'use_ebay', 'price')" style="background: #2196f3;">Use eBay</button>
+                            </td>
+                        </tr>
+                    `);
+                }
+                if (d.qtyDiff) {
+                    rows.push(`
+                        <tr>
+                            <td>${d.sku}</td>
+                            <td>${d.title || '-'}</td>
+                            <td><span style="color: #ff9800;">Quantity</span></td>
+                            <td>${d.local.quantity}</td>
+                            <td>${d.ebay.quantity}</td>
+                            <td>
+                                <button class="btn btn-sm" onclick="eBay.resolve('${d.sku}', 'use_local', 'quantity')" style="background: #4caf50; margin-right: 5px;">Use Local</button>
+                                <button class="btn btn-sm" onclick="eBay.resolve('${d.sku}', 'use_ebay', 'quantity')" style="background: #2196f3;">Use eBay</button>
+                            </td>
+                        </tr>
+                    `);
+                }
+                return rows.join('');
+            }).join('');
+        } else {
+            UI.hide(diffSection);
+        }
+
+        // Local only table
+        const localOnlySection = UI.el('localOnlySection');
+        const localOnlyTbody = document.querySelector('#localOnlyTable tbody');
+        if (data.localOnly.length > 0) {
+            UI.show(localOnlySection);
+            localOnlyTbody.innerHTML = data.localOnly.map(item => `
+                <tr>
+                    <td>${item.sku}</td>
+                    <td>${item.title || '-'}</td>
+                    <td>$${(item.localPrice || 0).toFixed(2)}</td>
+                    <td>${item.localQty || 0}</td>
+                    <td>${item.location || '-'}</td>
+                </tr>
+            `).join('');
+        } else {
+            UI.hide(localOnlySection);
+        }
+
+        // eBay only table
+        const ebayOnlySection = UI.el('ebayOnlySection');
+        const ebayOnlyTbody = document.querySelector('#ebayOnlyTable tbody');
+        if (data.ebayOnly.length > 0) {
+            UI.show(ebayOnlySection);
+            ebayOnlyTbody.innerHTML = data.ebayOnly.map(item => `
+                <tr>
+                    <td>${item.sku}</td>
+                    <td>${item.title || '-'}</td>
+                    <td>$${(item.ebayPrice || 0).toFixed(2)}</td>
+                    <td>${item.ebayQty || 0}</td>
+                    <td>
+                        <button class="btn btn-sm" onclick="eBay.resolve('${item.sku}', 'use_ebay', 'both')" style="background: #2196f3;">Import to Local</button>
+                    </td>
+                </tr>
+            `).join('');
+        } else {
+            UI.hide(ebayOnlySection);
+        }
+
+        // All matched message
+        const allMatchedMsg = UI.el('allMatchedMessage');
+        if (data.differences.length === 0 && data.localOnly.length === 0 && data.ebayOnly.length === 0) {
+            UI.show(allMatchedMsg);
+        } else {
+            UI.hide(allMatchedMsg);
+        }
+    },
+
+    async resolve(sku, action, field) {
+        const accountId = eBay.getSelectedAccount();
+        if (!accountId) {
+            UI.notify('Please select an eBay account first', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/ebay/resolve/${accountId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sku, action, field })
+            });
+
+            const data = await response.json();
+            if (data.error) throw new Error(data.error);
+
+            UI.notify(data.message, 'success');
+
+            // Refresh comparison
+            await eBay.compare();
+            Inventory.load();
+
+        } catch (err) {
+            UI.notify(err.message, 'error');
+        }
+    },
+
+    async bulkResolve(action) {
+        const accountId = eBay.getSelectedAccount();
+        if (!accountId || !eBay.comparisonData) {
+            UI.notify('No comparison data available', 'error');
+            return;
+        }
+
+        const items = eBay.comparisonData.differences.map(d => ({
+            sku: d.sku,
+            field: 'both'
+        }));
+
+        if (items.length === 0) {
+            UI.notify('No differences to resolve', 'info');
+            return;
+        }
+
+        if (!UI.confirm(`Apply "${action === 'use_local' ? 'Use Local' : 'Use eBay'}" to all ${items.length} differences?`)) return;
+
+        UI.notify('Resolving differences...', 'info');
+
+        try {
+            const response = await fetch(`/api/ebay/resolve-bulk/${accountId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items, action })
+            });
+
+            const data = await response.json();
+            if (data.error) throw new Error(data.error);
+
+            UI.notify(data.message, 'success');
+
+            // Refresh comparison
+            await eBay.compare();
+            Inventory.load();
+
+        } catch (err) {
+            UI.notify(err.message, 'error');
+        }
     }
 };
 
