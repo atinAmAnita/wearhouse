@@ -331,7 +331,13 @@ const ebayAPI = {
         if (!response.ok) throw new Error(`Token exchange failed: ${await response.text()}`);
         const tokenData = await response.json();
 
-        await data.saveAccount(accountId, {
+        console.log(`Token exchange successful for ${accountName}:`, {
+            hasAccessToken: !!tokenData.access_token,
+            hasRefreshToken: !!tokenData.refresh_token,
+            expiresIn: tokenData.expires_in
+        });
+
+        const accountData = {
             name: accountName,
             tokens: {
                 access_token: tokenData.access_token,
@@ -340,7 +346,18 @@ const ebayAPI = {
                 token_type: tokenData.token_type
             },
             addedAt: new Date().toISOString()
-        });
+        };
+
+        await data.saveAccount(accountId, accountData);
+        console.log(`Account ${accountId} saved to database`);
+
+        // Verify save worked
+        const savedAccount = await data.getAccount(accountId);
+        if (!savedAccount?.tokens?.refresh_token) {
+            console.error('WARNING: Account save verification failed - refresh token not found!');
+        } else {
+            console.log(`Account ${accountId} verified - refresh token saved correctly`);
+        }
 
         this.pendingAuth = null;
         return { accountId, accountName };
