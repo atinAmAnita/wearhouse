@@ -362,9 +362,9 @@ const ebayAPI = {
             if (!response.ok) {
                 const errorText = await response.text();
                 console.error('Token refresh failed:', errorText);
-                // If refresh token is invalid/expired, clear it so user knows to reconnect
-                if (errorText.includes('invalid_grant') || errorText.includes('expired')) {
-                    await data.saveAccount(accountId, { tokens: { ...account.tokens, access_token: null, expires_at: 0 } });
+                // If refresh token is invalid/expired, clear ALL tokens so UI shows expired
+                if (errorText.includes('invalid_grant') || errorText.includes('expired') || errorText.includes('HARD EXPIRED')) {
+                    await data.saveAccount(accountId, { tokens: null });
                     throw new Error('eBay session expired - please reconnect your account');
                 }
                 throw new Error(`Token refresh failed: ${errorText}`);
