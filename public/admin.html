@@ -371,8 +371,7 @@ ruName: 'your-runame'</pre>
                 }
 
                 listDiv.innerHTML = accounts.map(account => {
-                    const isActive = account.hasValidToken &&
-                        (!account.tokenExpires || new Date(account.tokenExpires) > new Date());
+                    const isActive = account.hasValidToken;
 
                     return `
                         <div class="account-card">
@@ -493,6 +492,8 @@ ruName: 'your-runame'</pre>
 
                 if (response.ok) {
                     showNotification(`Cleared ${data.deleted} items from inventory`, 'success');
+                    // Refresh page after short delay to show updated inventory
+                    setTimeout(() => window.location.reload(), 1500);
                 } else {
                     showNotification(data.error, 'error');
                 }

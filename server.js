@@ -172,15 +172,17 @@ const data = {
             return accounts.map(a => ({
                 id: a.accountId,
                 name: a.name,
-                hasValidToken: a.tokens?.access_token && (!a.tokens?.expires_at || Date.now() < a.tokens.expires_at),
-                lastSync: a.lastSync
+                hasValidToken: !!a.tokens?.refresh_token,
+                lastSync: a.lastSync,
+                addedAt: a.addedAt || a.createdAt
             }));
         }
         return Object.entries(localAccounts).map(([id, acc]) => ({
             id,
             name: acc.name,
-            hasValidToken: acc.tokens?.access_token && (!acc.tokens?.expires_at || Date.now() < acc.tokens.expires_at),
-            lastSync: acc.lastSync
+            hasValidToken: !!acc.tokens?.refresh_token,
+            lastSync: acc.lastSync,
+            addedAt: acc.addedAt || acc.createdAt
         }));
     },
 
