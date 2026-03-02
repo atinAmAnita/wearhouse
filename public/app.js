@@ -1439,7 +1439,7 @@ const eBay = {
     // Compare local inventory with eBay
     comparisonData: null,
 
-    async compare() {
+    async compare(skipSkus = [], forceSkus = []) {
         const accountId = eBay.getSelectedAccount();
         if (!accountId) {
             UI.notify('Please select an eBay account first', 'error');
@@ -1451,13 +1451,41 @@ const eBay = {
         if (btn) { btn.disabled = true; btn.textContent = 'Comparing...'; }
 
         try {
-            const result = await API.post(`/api/ebay/compare-and-queue/${accountId}`);
+            const result = await API.post(`/api/ebay/compare-and-queue/${accountId}`, { skipSkus, forceSkus });
 
             if (result.error) throw new Error(result.error);
 
+            // Handle conflicts — ask user per SKU
+            if (result.conflicts && result.conflicts.length > 0) {
+                const newSkips = [...skipSkus];
+                const newForces = [...forceSkus];
+
+                for (const conflict of result.conflicts) {
+                    const pendingDesc = conflict.pendingChanges.map(c => `${c.field}: ${c.oldValue} → ${c.newValue}`).join(', ');
+                    const ebayDesc = conflict.ebayChanges.map(c => `${c.field}: ${c.oldValue} → ${c.newValue}`).join(', ');
+
+                    const choice = confirm(
+                        `Conflict for SKU ${conflict.sku} (${conflict.description}):\n\n` +
+                        `Your pending change: ${pendingDesc}\n` +
+                        `eBay value: ${ebayDesc}\n\n` +
+                        `OK = Overwrite with eBay values\n` +
+                        `Cancel = Keep your pending change`
+                    );
+
+                    if (choice) {
+                        newForces.push(conflict.sku);
+                    } else {
+                        newSkips.push(conflict.sku);
+                    }
+                }
+
+                // Re-run with user's decisions
+                if (btn) { btn.disabled = false; btn.textContent = 'Compare with eBay'; }
+                return eBay.compare(newSkips, newForces);
+            }
+
             if (result.queued > 0) {
                 UI.notify(`${result.queued} differences queued in Updates tab`, 'success');
-                // Refresh updates and switch to Updates tab
                 await Updates.load();
                 document.querySelector('[data-tab="updates"]').click();
             } else {

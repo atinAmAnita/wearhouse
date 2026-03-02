@@ -2446,6 +2446,9 @@ app.post('/api/ebay/compare-and-queue/:accountId', async (req, res) => {
             return res.status(401).json({ error: 'eBay account not connected' });
         }
 
+        const skipSkus = req.body.skipSkus || []; // SKUs user chose to skip (conflicts)
+        const forceSkus = req.body.forceSkus || []; // SKUs user chose to overwrite
+
         // Get all local items
         const localItems = await data.getAllItems();
         const localMap = new Map();
@@ -2461,7 +2464,13 @@ app.post('/api/ebay/compare-and-queue/:accountId', async (req, res) => {
             ebayMap.set(sku, item);
         });
 
+        // Get existing pending updates to detect conflicts
+        const pendingUpdates = await data.getPendingUpdates('pending');
+        const pendingSkus = new Set(pendingUpdates.map(u => u.sku));
+
         let queued = 0;
+        const conflicts = [];
+        const skipped = 0;
 
         // Items in both but with differences — queue UPDATE
         for (const [sku, localItem] of localMap) {
@@ -2481,26 +2490,40 @@ app.post('/api/ebay/compare-and-queue/:accountId', async (req, res) => {
                 changes.push({ field: 'quantity', oldValue: localQty, newValue: ebayQty });
             }
 
-            if (changes.length > 0) {
-                await data.createPendingUpdate({
+            if (changes.length === 0) continue;
+
+            // Check for conflict with existing pending updates
+            if (pendingSkus.has(sku) && !forceSkus.includes(sku)) {
+                if (skipSkus.includes(sku)) continue; // User said skip
+                // First pass — report conflict back to frontend
+                const existingPending = pendingUpdates.filter(u => u.sku === sku);
+                conflicts.push({
                     sku,
-                    itemCode: localItem.itemCode,
-                    description: localItem.description,
-                    updateType: 'UPDATE',
-                    changes
+                    description: localItem.description || localItem.itemCode,
+                    pendingChanges: existingPending.map(u => u.changes).flat(),
+                    ebayChanges: changes
                 });
-                queued++;
+                continue;
             }
+
+            await data.createPendingUpdate({
+                sku,
+                itemCode: localItem.itemCode,
+                description: localItem.description,
+                updateType: 'UPDATE',
+                changes
+            });
+            queued++;
         }
 
         // Items on eBay but not local — queue CREATE
         for (const [sku, ebayItem] of ebayMap) {
             if (localMap.has(sku)) continue;
+            if (skipSkus.includes(sku)) continue;
 
             const ebayPrice = parseFloat(ebayItem.price) || 0;
             const ebayQty = parseInt(ebayItem.quantity) || 0;
 
-            // Create staged item
             const itemCode = sku.substring(0, 4);
             const location = sku.substring(4);
             const drawer = location.substring(0, 3);
@@ -2535,14 +2558,16 @@ app.post('/api/ebay/compare-and-queue/:accountId', async (req, res) => {
                 });
                 queued++;
             } catch (createErr) {
-                // SKU might already exist as staged, skip
                 console.warn(`Skipping eBay-only item ${sku}:`, createErr.message);
             }
         }
 
         res.json({
-            message: `Comparison complete: ${queued} differences queued in Updates`,
+            message: conflicts.length > 0
+                ? `${queued} queued, ${conflicts.length} conflicts need your decision`
+                : `Comparison complete: ${queued} differences queued in Updates`,
             queued,
+            conflicts,
             summary: {
                 totalLocal: localItems.length,
                 totalEbay: ebayData.items?.length || 0
