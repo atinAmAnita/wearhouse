@@ -284,7 +284,8 @@ function formatItem(item) {
         Quantity: item.currentQty,
         Description: item.description,
         DateAdded: item.dateAdded,
-        LastModified: item.lastModified
+        LastModified: item.lastModified,
+        Staged: item.staged || false
     };
 }
 
@@ -1545,6 +1546,8 @@ const ebayAPI = {
 app.get('/api/inventory', async (req, res) => {
     try {
         let items = await data.getAllItems();
+        // Filter out staged items (not yet approved via Updates tab)
+        items = items.filter(item => !item.Staged);
         const filter = req.query.filter;
 
         if (filter === 'needs-sku') {
@@ -1625,6 +1628,81 @@ app.put('/api/updates/dismiss-all', async (req, res) => {
     }
 });
 
+// Apply a pending update (actually perform the staged change)
+app.post('/api/updates/:id/apply', async (req, res) => {
+    try {
+        // Fetch the pending update
+        const allPending = await data.getPendingUpdates('pending');
+        const update = allPending.find(u => u._id.toString() === req.params.id);
+        if (!update) return res.status(404).json({ error: 'Pending update not found' });
+
+        const { sku, updateType, changes } = update;
+
+        if (updateType === 'CREATE') {
+            // Set staged=false so item appears in inventory
+            const item = await data.getItem(sku);
+            if (!item) return res.status(404).json({ error: 'Staged item not found' });
+            await data.updateItem(sku, { staged: false });
+        } else if (updateType === 'UPDATE') {
+            const item = await data.getItem(sku);
+            if (!item) return res.status(404).json({ error: 'Item not found' });
+            const updates = {};
+            for (const change of changes) {
+                if (change.field === 'quantity') {
+                    updates.currentQty = change.newValue;
+                    const diff = change.newValue - item.currentQty;
+                    await data.addHistory(sku, { date: new Date(), action: diff >= 0 ? 'ADJUST_UP' : 'ADJUST_DOWN', qty: diff, newTotal: change.newValue, note: `Quantity adjusted from ${item.currentQty} to ${change.newValue}` });
+                } else if (change.field === 'price') {
+                    updates.price = change.newValue;
+                } else if (change.field === 'description') {
+                    updates.description = change.newValue;
+                }
+            }
+            await data.updateItem(sku, updates);
+        } else if (updateType === 'DELETE') {
+            await data.deleteItem(sku);
+        } else if (updateType === 'SKU_CHANGE') {
+            const oldItem = await data.getItem(sku);
+            if (!oldItem) return res.status(404).json({ error: 'Item not found' });
+            const skuChange = changes.find(c => c.field === 'sku');
+            const descChange = changes.find(c => c.field === 'description');
+            if (!skuChange) return res.status(400).json({ error: 'SKU change data missing' });
+            const newSku = skuChange.newValue;
+            const newItemCode = newSku.substring(0, 4);
+            const newLocation = newSku.substring(4);
+            const newDrawer = newLocation.substring(0, 3);
+            const newPosition = newLocation.substring(3);
+            const newFullLocation = `${newDrawer}-${newPosition}`;
+            const newItem = {
+                sku: newSku, itemCode: newItemCode, drawerNumber: newDrawer, positionNumber: newPosition, fullLocation: newFullLocation,
+                price: oldItem.price, currentQty: oldItem.currentQty,
+                description: descChange ? descChange.newValue : oldItem.description,
+                categoryId: oldItem.categoryId, categoryName: oldItem.categoryName, condition: oldItem.condition,
+                itemSpecifics: oldItem.itemSpecifics || {}, dateAdded: oldItem.dateAdded, lastModified: new Date(),
+                lastSyncedQty: oldItem.lastSyncedQty, ebaySync: oldItem.ebaySync || {},
+                staged: false,
+                history: [...(oldItem.history || []), { date: new Date(), action: 'SKU_CHANGE', qty: 0, newTotal: oldItem.currentQty, note: `SKU changed from ${sku} to ${newSku}` }]
+            };
+            await data.createItem(newItem);
+            await data.deleteItem(sku);
+        }
+
+        // Mark update as applied
+        await data.dismissPendingUpdate(req.params.id);
+        // Update status to 'pushed' instead of 'dismissed'
+        if (!USE_LOCAL_DB) {
+            await db.PendingUpdate.findByIdAndUpdate(req.params.id, { status: 'pushed' });
+        } else {
+            const localUpdate = (localInventory.pendingUpdates || []).find(u => u._id === req.params.id);
+            if (localUpdate) { localUpdate.status = 'pushed'; saveLocalData(); }
+        }
+
+        res.json({ message: 'Update applied successfully', updateType });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/api/check-item/:itemId', async (req, res) => {
     try {
         const item = await data.getItemByCode(req.params.itemId);
@@ -1683,25 +1761,20 @@ app.post('/api/inventory', async (req, res) => {
         const existingByItemId = await data.getItemByCode(itemId);
         if (existingByItemId) {
             const newQty = existingByItemId.currentQty + qtyToAdd;
-            const updates = { currentQty: newQty };
-            if (description) updates.description = description;
-            if (price > 0) updates.price = parseFloat(price);
-            await data.updateItem(existingByItemId.sku, updates);
-            await data.addHistory(existingByItemId.sku, { date: new Date(), action: 'ADD', qty: qtyToAdd, newTotal: newQty, note: `Added ${qtyToAdd} units` });
-            // Queue pending update
+            // Stage changes - do NOT apply to item yet
             const pendingChanges = [{ field: 'quantity', oldValue: existingByItemId.currentQty, newValue: newQty }];
-            if (updates.price) pendingChanges.push({ field: 'price', oldValue: existingByItemId.price, newValue: updates.price });
-            if (updates.description) pendingChanges.push({ field: 'description', oldValue: existingByItemId.description, newValue: updates.description });
-            await data.createPendingUpdate({ sku: existingByItemId.sku, itemCode: existingByItemId.itemCode, description: updates.description || existingByItemId.description, updateType: 'UPDATE', changes: pendingChanges });
+            if (price > 0) pendingChanges.push({ field: 'price', oldValue: existingByItemId.price, newValue: parseFloat(price) });
+            if (description) pendingChanges.push({ field: 'description', oldValue: existingByItemId.description, newValue: description });
+            await data.createPendingUpdate({ sku: existingByItemId.sku, itemCode: existingByItemId.itemCode, description: description || existingByItemId.description, updateType: 'UPDATE', changes: pendingChanges });
             const barcode = await generateBarcode(existingByItemId.sku);
-            return res.json({ message: `Quantity added to existing item (now ${newQty})`, item: { SKU: existingByItemId.sku, ItemCode: existingByItemId.itemCode, DrawerNumber: existingByItemId.drawerNumber, PositionNumber: existingByItemId.positionNumber, FullLocation: existingByItemId.fullLocation, Price: updates.price || existingByItemId.price || 0, Quantity: newQty, Description: updates.description || existingByItemId.description }, barcode });
+            return res.json({ message: `Change queued for existing item`, item: { SKU: existingByItemId.sku, ItemCode: existingByItemId.itemCode, DrawerNumber: existingByItemId.drawerNumber, PositionNumber: existingByItemId.positionNumber, FullLocation: existingByItemId.fullLocation, Price: existingByItemId.price || 0, Quantity: existingByItemId.currentQty, Description: existingByItemId.description }, barcode });
         }
 
         const existingByLocation = await data.getItemByLocation(fullLocation);
         if (existingByLocation) return res.status(400).json({ error: `Location ${fullLocation} already has item ${existingByLocation.itemCode}` });
 
         const now = new Date();
-        const newItem = { sku, itemCode: itemId, drawerNumber: drawerStr, positionNumber: positionStr, fullLocation, price: parseFloat(price) || 0, currentQty: qtyToAdd, description, dateAdded: now, lastModified: now, history: [{ date: now, action: 'CREATE', qty: qtyToAdd, newTotal: qtyToAdd, note: 'Item created' }] };
+        const newItem = { sku, itemCode: itemId, drawerNumber: drawerStr, positionNumber: positionStr, fullLocation, price: parseFloat(price) || 0, currentQty: qtyToAdd, description, staged: true, dateAdded: now, lastModified: now, history: [{ date: now, action: 'CREATE', qty: qtyToAdd, newTotal: qtyToAdd, note: 'Item created' }] };
         await data.createItem(newItem);
         // Queue pending update
         await data.createPendingUpdate({ sku, itemCode: itemId, description, updateType: 'CREATE', changes: [
@@ -1724,18 +1797,7 @@ app.put('/api/inventory/:sku', async (req, res) => {
         const item = await data.getItem(sku);
         if (!item) return res.status(404).json({ error: 'Item not found' });
 
-        const updates = {};
-        if (quantity !== undefined) {
-            const newQty = parseInt(quantity);
-            const diff = newQty - item.currentQty;
-            updates.currentQty = newQty;
-            await data.addHistory(sku, { date: new Date(), action: diff >= 0 ? 'ADJUST_UP' : 'ADJUST_DOWN', qty: diff, newTotal: newQty, note: `Quantity adjusted from ${item.currentQty} to ${newQty}` });
-        }
-        if (price !== undefined) updates.price = parseFloat(price);
-        if (description !== undefined) updates.description = description;
-
-        const updated = await data.updateItem(sku, updates);
-        // Queue pending update
+        // Stage changes - do NOT apply to item yet
         const pendingChanges = [];
         if (quantity !== undefined) pendingChanges.push({ field: 'quantity', oldValue: item.currentQty, newValue: parseInt(quantity) });
         if (price !== undefined) pendingChanges.push({ field: 'price', oldValue: item.price, newValue: parseFloat(price) });
@@ -1743,7 +1805,8 @@ app.put('/api/inventory/:sku', async (req, res) => {
         if (pendingChanges.length > 0) {
             await data.createPendingUpdate({ sku, itemCode: item.itemCode, description: description !== undefined ? description : item.description, updateType: 'UPDATE', changes: pendingChanges });
         }
-        res.json({ message: 'Item updated', item: formatItem(updated) });
+        // Return current (unchanged) item
+        res.json({ message: 'Change queued', item: formatItem(item) });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1753,14 +1816,13 @@ app.delete('/api/inventory/:sku', async (req, res) => {
     try {
         const item = await data.getItem(req.params.sku);
         if (!item) return res.status(404).json({ error: 'Item not found' });
-        // Queue pending update before deleting
+        // Stage delete - do NOT actually delete yet
         await data.createPendingUpdate({ sku: item.sku, itemCode: item.itemCode, description: item.description, updateType: 'DELETE', changes: [
             { field: 'quantity', oldValue: item.currentQty, newValue: null },
             { field: 'price', oldValue: item.price, newValue: null },
             { field: 'item', oldValue: item.sku, newValue: null }
         ]});
-        await data.deleteItem(req.params.sku);
-        res.json({ message: 'Item deleted', item: { SKU: item.sku, ItemCode: item.itemCode, FullLocation: item.fullLocation, Quantity: item.currentQty } });
+        res.json({ message: 'Delete queued', item: { SKU: item.sku, ItemCode: item.itemCode, FullLocation: item.fullLocation, Quantity: item.currentQty } });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1852,56 +1914,21 @@ app.post('/api/inventory/:sku/change-sku', async (req, res) => {
         const newPosition = newLocation.substring(3);
         const newFullLocation = `${newDrawer}-${newPosition}`;
 
-        // Create new item with new SKU, copying all data
-        const newItem = {
-            sku: newSku,
-            itemCode: newItemCode,
-            drawerNumber: newDrawer,
-            positionNumber: newPosition,
-            fullLocation: newFullLocation,
-            price: oldItem.price,
-            currentQty: oldItem.currentQty,
-            description: description !== undefined ? description : oldItem.description,
-            categoryId: oldItem.categoryId,
-            categoryName: oldItem.categoryName,
-            condition: oldItem.condition,
-            itemSpecifics: oldItem.itemSpecifics || {},
-            dateAdded: oldItem.dateAdded,
-            lastModified: new Date(),
-            lastSyncedQty: oldItem.lastSyncedQty,
-            ebaySync: oldItem.ebaySync || {},  // Preserve eBay sync data (ebayItemId stays linked)
-            history: [
-                ...(oldItem.history || []),
-                {
-                    date: new Date(),
-                    action: 'SKU_CHANGE',
-                    qty: 0,
-                    newTotal: oldItem.currentQty,
-                    note: `SKU changed from ${oldSku} to ${newSku}`
-                }
-            ]
-        };
-
-        // Create the new item
-        await data.createItem(newItem);
-
-        // Delete the old item
-        await data.deleteItem(oldSku);
-
-        // Queue pending update
-        await data.createPendingUpdate({ sku: newSku, itemCode: newItemCode, description: newItem.description, updateType: 'SKU_CHANGE', changes: [
+        // Stage SKU change - do NOT perform it yet
+        await data.createPendingUpdate({ sku: oldSku, itemCode: oldItem.itemCode, description: description !== undefined ? description : oldItem.description, updateType: 'SKU_CHANGE', changes: [
             { field: 'sku', oldValue: oldSku, newValue: newSku },
-            { field: 'location', oldValue: oldItem.fullLocation, newValue: newFullLocation }
+            { field: 'location', oldValue: oldItem.fullLocation, newValue: newFullLocation },
+            { field: 'description', oldValue: oldItem.description, newValue: description !== undefined ? description : oldItem.description }
         ]});
 
-        // Generate barcode for new SKU
-        const barcode = await generateBarcode(newSku);
+        // Generate barcode for current (unchanged) SKU
+        const barcode = await generateBarcode(oldSku);
 
         res.json({
-            message: 'SKU changed successfully',
+            message: 'SKU change queued',
             oldSku,
             newSku,
-            item: formatItem(newItem),
+            item: formatItem(oldItem),
             barcode
         });
     } catch (err) {

@@ -61,6 +61,7 @@ const inventoryItemSchema = new mongoose.Schema({
         ebayOfferId: String,
         status: { type: String, default: 'not_synced' }  // 'synced' | 'pending' | 'error' | 'not_synced'
     },
+    staged: { type: Boolean, default: false },
     history: [{
         date: { type: Date, default: Date.now },
         action: String,

@@ -91,6 +91,7 @@ const API = {
         getCount: () => API.get('/api/updates/count'),
         dismiss: (id) => API.put(`/api/updates/${id}/dismiss`),
         dismissAll: () => API.put('/api/updates/dismiss-all'),
+        apply: (id) => API.post(`/api/updates/${id}/apply`),
     }
 };
 
@@ -433,13 +434,8 @@ const Lookup = {
 
         try {
             await API.inventory.update(State.currentItem.SKU, { quantity: newQty });
-            State.currentItem.Quantity = newQty;
-
-            const details = document.querySelector('#lookupResult .item-details');
-            const qtyP = details?.querySelector('.item-qty');
-            if (qtyP) qtyP.innerHTML = `<strong>Quantity:</strong> ${newQty}`;
-
-            UI.notify(`Quantity updated to ${newQty}`, 'success');
+            // Don't update State or DOM - change is only queued
+            UI.notify(`Quantity change queued (${State.currentItem.Quantity} → ${newQty})`, 'success');
             Updates.refreshBadge();
         } catch (err) {
             UI.notify(err.message, 'error');
@@ -453,13 +449,8 @@ const Lookup = {
 
         try {
             await API.inventory.update(State.currentItem.SKU, { price: newPrice });
-            State.currentItem.Price = newPrice;
-
-            const details = document.querySelector('#lookupResult .item-details');
-            const priceP = details?.querySelector('.item-price');
-            if (priceP) priceP.innerHTML = `<strong>Price:</strong> $${newPrice.toFixed(2)}`;
-
-            UI.notify(`Price updated to $${newPrice.toFixed(2)}`, 'success');
+            // Don't update State or DOM - change is only queued
+            UI.notify(`Price change queued ($${State.currentItem.Price.toFixed(2)} → $${newPrice.toFixed(2)})`, 'success');
             Updates.refreshBadge();
         } catch (err) {
             UI.notify(err.message, 'error');
@@ -468,14 +459,11 @@ const Lookup = {
 
     async deleteCurrent() {
         if (!State.currentItem) return;
-        if (!UI.confirm(`Are you sure you want to delete item ${State.currentItem.SKU}?`)) return;
+        if (!UI.confirm(`Are you sure you want to queue deletion of item ${State.currentItem.SKU}?`)) return;
 
         try {
             await API.inventory.delete(State.currentItem.SKU);
-            UI.hide(UI.el('lookupResult'));
-            UI.el('skuInput').value = '';
-            State.currentItem = null;
-            UI.notify('Item deleted successfully', 'success');
+            UI.notify('Delete queued — apply in Updates tab', 'success');
             Updates.refreshBadge();
         } catch (err) {
             UI.notify(err.message, 'error');
@@ -1733,6 +1721,7 @@ const Updates = {
                 <td><span class="type-badge" style="background: ${tc.bg}; color: ${tc.color};">${update.updateType}</span></td>
                 <td>${changesHtml}</td>
                 <td style="white-space: nowrap;">
+                    <button class="btn btn-sm btn-success" onclick="Updates.apply('${id}')" style="background:#2e7d32;color:#fff;">Update</button>
                     <button class="btn btn-sm btn-secondary" onclick="Updates.dismiss('${id}')">Dismiss</button>
                     <button class="btn btn-sm btn-primary" onclick="Updates.viewItem('${update.sku}')">View</button>
                 </td>
@@ -1753,6 +1742,19 @@ const Updates = {
             this.render();
             this.refreshBadge();
             UI.notify('Update dismissed', 'success');
+        } catch (err) {
+            UI.notify(err.message, 'error');
+        }
+    },
+
+    async apply(id) {
+        try {
+            await API.updates.apply(id);
+            this.allUpdates = this.allUpdates.filter(u => u._id !== id);
+            this.render();
+            this.refreshBadge();
+            Inventory.load();
+            UI.notify('Update applied', 'success');
         } catch (err) {
             UI.notify(err.message, 'error');
         }
@@ -1884,7 +1886,7 @@ const EditItem = {
         if (newSku === this.currentSku) {
             try {
                 await API.inventory.update(this.currentSku, { description });
-                UI.notify('Description updated', 'success');
+                UI.notify('Description change queued', 'success');
                 Updates.refreshBadge();
                 this.close();
                 await Lookup.search();
@@ -1903,7 +1905,7 @@ const EditItem = {
         try {
             UI.el('editSaveBtn').disabled = true;
             await API.post(`/api/inventory/${encodeURIComponent(this.currentSku)}/change-sku`, { newSku, description });
-            UI.notify('Item updated successfully', 'success');
+            UI.notify('SKU change queued', 'success');
             Updates.refreshBadge();
             this.close();
 
