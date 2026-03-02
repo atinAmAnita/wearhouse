@@ -1660,7 +1660,8 @@ app.post('/api/updates/:id/apply', async (req, res) => {
                     await data.addHistory(sku, { date: new Date(), action: diff >= 0 ? 'ADJUST_UP' : 'ADJUST_DOWN', qty: diff, newTotal: change.newValue, note: `Quantity adjusted from ${item.currentQty} to ${change.newValue}` });
                 } else if (change.field === 'price') {
                     updates.price = change.newValue;
-                    await data.addHistory(sku, { date: new Date(), action: 'PRICE_CHANGE', qty: 0, newTotal: item.currentQty, note: `Price changed from $${item.price} to $${change.newValue}` });
+                    const priceDiff = change.newValue - item.price;
+                    await data.addHistory(sku, { date: new Date(), action: 'PRICE_CHANGE', qty: priceDiff, newTotal: change.newValue, note: `Price changed to $${change.newValue}` });
                 } else if (change.field === 'description') {
                     updates.description = change.newValue;
                 }

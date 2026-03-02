@@ -709,7 +709,7 @@ const History = {
                         <div class="history-entry ${cls}">
                             <div class="history-icon">${icon}</div>
                             <span class="history-action">${label}</span>
-                            <span class="history-qty">${entry.qty >= 0 ? '+' : ''}${entry.qty} → ${entry.newTotal}</span>
+                            <span class="history-qty">${entry.action === 'PRICE_CHANGE' ? `$${entry.newTotal - entry.qty} ${entry.qty >= 0 ? '+' : ''}$${entry.qty} → $${entry.newTotal}` : `${entry.newTotal - entry.qty} ${entry.qty >= 0 ? '+' : ''}${entry.qty} → ${entry.newTotal}`}</span>
                             <span class="history-date">${UI.formatDateTime(entry.date)}</span>
                             ${entry.note ? `<span class="history-note">${entry.note}</span>` : ''}
                         </div>
@@ -736,7 +736,7 @@ const History = {
         const map = {
             CREATE: 'action-create', ADD: 'action-add', ADJUST_UP: 'action-add',
             ADJUST_DOWN: 'action-remove', REMOVE: 'action-remove',
-            EBAY_SYNC: 'action-sync', MIGRATE: 'action-migrate'
+            EBAY_SYNC: 'action-sync', MIGRATE: 'action-migrate', PRICE_CHANGE: 'action-add'
         };
         return map[action] || '';
     },
@@ -744,7 +744,7 @@ const History = {
     getIcon(action) {
         const map = {
             CREATE: '+', ADD: '+', ADJUST_UP: '↑', ADJUST_DOWN: '↓',
-            REMOVE: '-', EBAY_SYNC: '↔', MIGRATE: '→'
+            REMOVE: '-', EBAY_SYNC: '↔', MIGRATE: '→', PRICE_CHANGE: '$'
         };
         return map[action] || '•';
     },
@@ -753,7 +753,7 @@ const History = {
         const map = {
             CREATE: 'Item Created', ADD: 'Stock Added', ADJUST_UP: 'Quantity Increased',
             ADJUST_DOWN: 'Quantity Decreased', REMOVE: 'Stock Removed',
-            EBAY_SYNC: 'Synced to eBay', MIGRATE: 'Migrated from Excel'
+            EBAY_SYNC: 'Synced to eBay', MIGRATE: 'Migrated from Excel', PRICE_CHANGE: 'Price Changed'
         };
         return map[action] || action;
     }
