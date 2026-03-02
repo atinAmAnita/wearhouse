@@ -83,6 +83,14 @@ const API = {
     advanced: {
         get: (sku) => API.get(`/api/inventory/${sku}/advanced`),
         update: (sku, data) => API.put(`/api/inventory/${sku}/advanced`, data),
+    },
+
+    // Pending updates endpoints
+    updates: {
+        getAll: (status = 'pending') => API.get(`/api/updates?status=${status}`),
+        getCount: () => API.get('/api/updates/count'),
+        dismiss: (id) => API.put(`/api/updates/${id}/dismiss`),
+        dismissAll: () => API.put('/api/updates/dismiss-all'),
     }
 };
 
@@ -158,6 +166,7 @@ const Tabs = {
         if (tabId === 'inventory') Inventory.load();
         if (tabId === 'advanced') Advanced.loadItems();
         if (tabId === 'ebay') eBay.loadStatus();
+        if (tabId === 'updates') Updates.load();
     }
 };
 
@@ -326,6 +335,7 @@ const AddItem = {
 
             UI.el('barcodeImage').src = data.barcode;
             UI.notify(data.message, 'success');
+            Updates.refreshBadge();
 
             // Reset form
             UI.el('addItemForm').reset();
@@ -430,6 +440,7 @@ const Lookup = {
             if (qtyP) qtyP.innerHTML = `<strong>Quantity:</strong> ${newQty}`;
 
             UI.notify(`Quantity updated to ${newQty}`, 'success');
+            Updates.refreshBadge();
         } catch (err) {
             UI.notify(err.message, 'error');
         }
@@ -449,6 +460,7 @@ const Lookup = {
             if (priceP) priceP.innerHTML = `<strong>Price:</strong> $${newPrice.toFixed(2)}`;
 
             UI.notify(`Price updated to $${newPrice.toFixed(2)}`, 'success');
+            Updates.refreshBadge();
         } catch (err) {
             UI.notify(err.message, 'error');
         }
@@ -464,6 +476,7 @@ const Lookup = {
             UI.el('skuInput').value = '';
             State.currentItem = null;
             UI.notify('Item deleted successfully', 'success');
+            Updates.refreshBadge();
         } catch (err) {
             UI.notify(err.message, 'error');
         }
@@ -1658,6 +1671,132 @@ const eBay = {
 };
 
 // ============================================
+// UPDATES - Pending changes queue
+// ============================================
+const Updates = {
+    allUpdates: [],
+
+    init() {
+        this.refreshBadge();
+    },
+
+    async load() {
+        try {
+            const result = await API.updates.getAll();
+            this.allUpdates = result.updates;
+            const countEl = UI.el('pendingCount');
+            if (countEl) countEl.textContent = `${result.pendingCount} pending`;
+            this.render();
+            this.refreshBadge();
+        } catch (err) {
+            UI.notify('Failed to load updates: ' + err.message, 'error');
+        }
+    },
+
+    render() {
+        const tbody = document.querySelector('#updatesTable tbody');
+        if (!tbody) return;
+
+        const emptyEl = UI.el('updatesEmpty');
+        if (this.allUpdates.length === 0) {
+            tbody.innerHTML = '';
+            if (emptyEl) UI.show(emptyEl);
+            return;
+        }
+        if (emptyEl) UI.hide(emptyEl);
+
+        tbody.innerHTML = this.allUpdates.map(update => {
+            const typeColors = {
+                'CREATE': { bg: '#1b5e20', color: '#a5d6a7' },
+                'UPDATE': { bg: '#0d47a1', color: '#90caf9' },
+                'DELETE': { bg: '#b71c1c', color: '#ef9a9a' },
+                'SKU_CHANGE': { bg: '#e65100', color: '#ffcc80' }
+            };
+            const tc = typeColors[update.updateType] || { bg: '#333', color: '#ccc' };
+
+            const changesHtml = (update.changes || []).map(c => {
+                if (update.updateType === 'CREATE') {
+                    return `<span class="change-tag">${c.field}: <strong>${this.fmtVal(c.newValue)}</strong></span>`;
+                }
+                if (update.updateType === 'DELETE') {
+                    return `<span class="change-tag change-tag-delete">${c.field}: ${this.fmtVal(c.oldValue)} &rarr; removed</span>`;
+                }
+                return `<span class="change-tag">${c.field}: ${this.fmtVal(c.oldValue)} &rarr; <strong>${this.fmtVal(c.newValue)}</strong></span>`;
+            }).join(' ');
+
+            const time = update.createdAt ? new Date(update.createdAt).toLocaleString() : '';
+            const id = update._id;
+
+            return `<tr>
+                <td style="white-space: nowrap; font-size: 0.85rem;">${time}</td>
+                <td><strong>${update.sku}</strong></td>
+                <td><span class="type-badge" style="background: ${tc.bg}; color: ${tc.color};">${update.updateType}</span></td>
+                <td>${changesHtml}</td>
+                <td style="white-space: nowrap;">
+                    <button class="btn btn-sm btn-secondary" onclick="Updates.dismiss('${id}')">Dismiss</button>
+                    <button class="btn btn-sm btn-primary" onclick="Updates.viewItem('${update.sku}')">View</button>
+                </td>
+            </tr>`;
+        }).join('');
+    },
+
+    fmtVal(val) {
+        if (val === null || val === undefined) return 'N/A';
+        if (typeof val === 'number') return val % 1 === 0 ? val : '$' + val.toFixed(2);
+        return val;
+    },
+
+    async dismiss(id) {
+        try {
+            await API.updates.dismiss(id);
+            this.allUpdates = this.allUpdates.filter(u => u._id !== id);
+            this.render();
+            this.refreshBadge();
+            UI.notify('Update dismissed', 'success');
+        } catch (err) {
+            UI.notify(err.message, 'error');
+        }
+    },
+
+    async dismissAll() {
+        if (!UI.confirm('Dismiss all pending updates? This cannot be undone.')) return;
+        try {
+            await API.updates.dismissAll();
+            this.allUpdates = [];
+            this.render();
+            this.refreshBadge();
+            UI.notify('All updates dismissed', 'success');
+        } catch (err) {
+            UI.notify(err.message, 'error');
+        }
+    },
+
+    viewItem(sku) {
+        const input = UI.el('skuInput');
+        if (input) input.value = sku;
+        Tabs.switch('lookup');
+        Lookup.search();
+    },
+
+    async refreshBadge() {
+        try {
+            const result = await API.updates.getCount();
+            const badge = UI.el('updatesBadge');
+            if (badge) {
+                if (result.count > 0) {
+                    badge.textContent = result.count;
+                    badge.classList.remove('hidden');
+                } else {
+                    badge.classList.add('hidden');
+                }
+            }
+        } catch (err) {
+            // Silently fail - badge is non-critical
+        }
+    }
+};
+
+// ============================================
 // EDIT ITEM - SKU Change Functionality
 // ============================================
 const EditItem = {
@@ -1746,6 +1885,7 @@ const EditItem = {
             try {
                 await API.inventory.update(this.currentSku, { description });
                 UI.notify('Description updated', 'success');
+                Updates.refreshBadge();
                 this.close();
                 await Lookup.search();
                 return;
@@ -1764,6 +1904,7 @@ const EditItem = {
             UI.el('editSaveBtn').disabled = true;
             await API.post(`/api/inventory/${encodeURIComponent(this.currentSku)}/change-sku`, { newSku, description });
             UI.notify('Item updated successfully', 'success');
+            Updates.refreshBadge();
             this.close();
 
             // Refresh with new SKU
@@ -1853,6 +1994,7 @@ document.addEventListener('DOMContentLoaded', () => {
     Lookup.init();
     Inventory.init();
     Advanced.init();
+    Updates.init();
 
     // Load eBay status to populate accounts (needed for Advanced tab)
     eBay.loadStatus();

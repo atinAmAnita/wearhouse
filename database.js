@@ -84,9 +84,27 @@ const ebayAccountSchema = new mongoose.Schema({
     lastSync: { type: Date, default: null }
 });
 
+// Pending Update Schema (queue for changes not yet synced to eBay)
+const pendingUpdateSchema = new mongoose.Schema({
+    sku: { type: String, required: true, index: true },
+    itemCode: { type: String },
+    description: { type: String },
+    updateType: { type: String, required: true, enum: ['CREATE', 'UPDATE', 'DELETE', 'SKU_CHANGE'] },
+    changes: [{
+        field: { type: String, required: true },
+        oldValue: { type: mongoose.Schema.Types.Mixed },
+        newValue: { type: mongoose.Schema.Types.Mixed }
+    }],
+    status: { type: String, default: 'pending', enum: ['pending', 'dismissed', 'pushed'] },
+    createdAt: { type: Date, default: Date.now },
+    dismissedAt: { type: Date, default: null }
+});
+pendingUpdateSchema.index({ status: 1, createdAt: -1 });
+
 // Models
 const InventoryItem = mongoose.models.InventoryItem || mongoose.model('InventoryItem', inventoryItemSchema);
 const EbayAccount = mongoose.models.EbayAccount || mongoose.model('EbayAccount', ebayAccountSchema);
+const PendingUpdate = mongoose.models.PendingUpdate || mongoose.model('PendingUpdate', pendingUpdateSchema);
 
 // ============================================
 // INVENTORY OPERATIONS
@@ -237,11 +255,55 @@ const ebayAccounts = {
     }
 };
 
+// ============================================
+// PENDING UPDATES OPERATIONS
+// ============================================
+
+const pendingUpdates = {
+    async create(updateData) {
+        await connectDB();
+        if (!isConnected) return null;
+        const update = new PendingUpdate(updateData);
+        return update.save();
+    },
+
+    async getAll(status = 'pending') {
+        await connectDB();
+        if (!isConnected) return [];
+        return PendingUpdate.find({ status }).sort({ createdAt: -1 }).lean();
+    },
+
+    async dismiss(id) {
+        await connectDB();
+        if (!isConnected) return null;
+        return PendingUpdate.findByIdAndUpdate(id, {
+            status: 'dismissed', dismissedAt: new Date()
+        }, { new: true }).lean();
+    },
+
+    async dismissAll() {
+        await connectDB();
+        if (!isConnected) return null;
+        return PendingUpdate.updateMany(
+            { status: 'pending' },
+            { status: 'dismissed', dismissedAt: new Date() }
+        );
+    },
+
+    async count(status = 'pending') {
+        await connectDB();
+        if (!isConnected) return 0;
+        return PendingUpdate.countDocuments({ status });
+    }
+};
+
 module.exports = {
     connectDB,
     isConnected: () => isConnected,
     inventory,
     ebayAccounts,
+    pendingUpdates,
     InventoryItem,
-    EbayAccount
+    EbayAccount,
+    PendingUpdate
 };

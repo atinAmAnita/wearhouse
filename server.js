@@ -210,6 +210,65 @@ const data = {
         delete localAccounts[accountId];
         saveLocalAccounts();
         return removed;
+    },
+
+    // Pending Updates
+    async createPendingUpdate(updateData) {
+        if (!USE_LOCAL_DB) {
+            return db.pendingUpdates.create(updateData);
+        }
+        if (!localInventory.pendingUpdates) localInventory.pendingUpdates = [];
+        const update = {
+            _id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
+            ...updateData,
+            createdAt: new Date().toISOString(),
+            status: 'pending'
+        };
+        localInventory.pendingUpdates.push(update);
+        saveLocalData();
+        return update;
+    },
+
+    async getPendingUpdates(status = 'pending') {
+        if (!USE_LOCAL_DB) {
+            return db.pendingUpdates.getAll(status);
+        }
+        return (localInventory.pendingUpdates || [])
+            .filter(u => u.status === status)
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    },
+
+    async dismissPendingUpdate(id) {
+        if (!USE_LOCAL_DB) {
+            return db.pendingUpdates.dismiss(id);
+        }
+        const update = (localInventory.pendingUpdates || []).find(u => u._id === id);
+        if (update) {
+            update.status = 'dismissed';
+            update.dismissedAt = new Date().toISOString();
+            saveLocalData();
+        }
+        return update;
+    },
+
+    async dismissAllPendingUpdates() {
+        if (!USE_LOCAL_DB) {
+            return db.pendingUpdates.dismissAll();
+        }
+        (localInventory.pendingUpdates || []).forEach(u => {
+            if (u.status === 'pending') {
+                u.status = 'dismissed';
+                u.dismissedAt = new Date().toISOString();
+            }
+        });
+        saveLocalData();
+    },
+
+    async countPendingUpdates() {
+        if (!USE_LOCAL_DB) {
+            return db.pendingUpdates.count();
+        }
+        return (localInventory.pendingUpdates || []).filter(u => u.status === 'pending').length;
     }
 };
 
@@ -1523,6 +1582,49 @@ app.get('/api/inventory/:sku/history', async (req, res) => {
     }
 });
 
+// ============================================
+// PENDING UPDATES ROUTES
+// ============================================
+
+app.get('/api/updates', async (req, res) => {
+    try {
+        const status = req.query.status || 'pending';
+        const updates = await data.getPendingUpdates(status);
+        const count = await data.countPendingUpdates();
+        res.json({ updates, pendingCount: count });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/updates/count', async (req, res) => {
+    try {
+        const count = await data.countPendingUpdates();
+        res.json({ count });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/updates/:id/dismiss', async (req, res) => {
+    try {
+        const update = await data.dismissPendingUpdate(req.params.id);
+        if (!update) return res.status(404).json({ error: 'Update not found' });
+        res.json({ message: 'Update dismissed', update });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/updates/dismiss-all', async (req, res) => {
+    try {
+        await data.dismissAllPendingUpdates();
+        res.json({ message: 'All updates dismissed' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/api/check-item/:itemId', async (req, res) => {
     try {
         const item = await data.getItemByCode(req.params.itemId);
@@ -1586,6 +1688,11 @@ app.post('/api/inventory', async (req, res) => {
             if (price > 0) updates.price = parseFloat(price);
             await data.updateItem(existingByItemId.sku, updates);
             await data.addHistory(existingByItemId.sku, { date: new Date(), action: 'ADD', qty: qtyToAdd, newTotal: newQty, note: `Added ${qtyToAdd} units` });
+            // Queue pending update
+            const pendingChanges = [{ field: 'quantity', oldValue: existingByItemId.currentQty, newValue: newQty }];
+            if (updates.price) pendingChanges.push({ field: 'price', oldValue: existingByItemId.price, newValue: updates.price });
+            if (updates.description) pendingChanges.push({ field: 'description', oldValue: existingByItemId.description, newValue: updates.description });
+            await data.createPendingUpdate({ sku: existingByItemId.sku, itemCode: existingByItemId.itemCode, description: updates.description || existingByItemId.description, updateType: 'UPDATE', changes: pendingChanges });
             const barcode = await generateBarcode(existingByItemId.sku);
             return res.json({ message: `Quantity added to existing item (now ${newQty})`, item: { SKU: existingByItemId.sku, ItemCode: existingByItemId.itemCode, DrawerNumber: existingByItemId.drawerNumber, PositionNumber: existingByItemId.positionNumber, FullLocation: existingByItemId.fullLocation, Price: updates.price || existingByItemId.price || 0, Quantity: newQty, Description: updates.description || existingByItemId.description }, barcode });
         }
@@ -1596,6 +1703,13 @@ app.post('/api/inventory', async (req, res) => {
         const now = new Date();
         const newItem = { sku, itemCode: itemId, drawerNumber: drawerStr, positionNumber: positionStr, fullLocation, price: parseFloat(price) || 0, currentQty: qtyToAdd, description, dateAdded: now, lastModified: now, history: [{ date: now, action: 'CREATE', qty: qtyToAdd, newTotal: qtyToAdd, note: 'Item created' }] };
         await data.createItem(newItem);
+        // Queue pending update
+        await data.createPendingUpdate({ sku, itemCode: itemId, description, updateType: 'CREATE', changes: [
+            { field: 'quantity', oldValue: null, newValue: qtyToAdd },
+            { field: 'price', oldValue: null, newValue: parseFloat(price) || 0 },
+            { field: 'description', oldValue: null, newValue: description },
+            { field: 'location', oldValue: null, newValue: fullLocation }
+        ]});
         const barcode = await generateBarcode(sku);
         res.json({ message: 'New item added', item: { SKU: sku, ItemCode: itemId, DrawerNumber: drawerStr, PositionNumber: positionStr, FullLocation: fullLocation, Price: newItem.price, Quantity: qtyToAdd, Description: description, DateAdded: now }, barcode });
     } catch (err) {
@@ -1621,6 +1735,14 @@ app.put('/api/inventory/:sku', async (req, res) => {
         if (description !== undefined) updates.description = description;
 
         const updated = await data.updateItem(sku, updates);
+        // Queue pending update
+        const pendingChanges = [];
+        if (quantity !== undefined) pendingChanges.push({ field: 'quantity', oldValue: item.currentQty, newValue: parseInt(quantity) });
+        if (price !== undefined) pendingChanges.push({ field: 'price', oldValue: item.price, newValue: parseFloat(price) });
+        if (description !== undefined) pendingChanges.push({ field: 'description', oldValue: item.description, newValue: description });
+        if (pendingChanges.length > 0) {
+            await data.createPendingUpdate({ sku, itemCode: item.itemCode, description: description !== undefined ? description : item.description, updateType: 'UPDATE', changes: pendingChanges });
+        }
         res.json({ message: 'Item updated', item: formatItem(updated) });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1631,6 +1753,12 @@ app.delete('/api/inventory/:sku', async (req, res) => {
     try {
         const item = await data.getItem(req.params.sku);
         if (!item) return res.status(404).json({ error: 'Item not found' });
+        // Queue pending update before deleting
+        await data.createPendingUpdate({ sku: item.sku, itemCode: item.itemCode, description: item.description, updateType: 'DELETE', changes: [
+            { field: 'quantity', oldValue: item.currentQty, newValue: null },
+            { field: 'price', oldValue: item.price, newValue: null },
+            { field: 'item', oldValue: item.sku, newValue: null }
+        ]});
         await data.deleteItem(req.params.sku);
         res.json({ message: 'Item deleted', item: { SKU: item.sku, ItemCode: item.itemCode, FullLocation: item.fullLocation, Quantity: item.currentQty } });
     } catch (err) {
@@ -1759,6 +1887,12 @@ app.post('/api/inventory/:sku/change-sku', async (req, res) => {
 
         // Delete the old item
         await data.deleteItem(oldSku);
+
+        // Queue pending update
+        await data.createPendingUpdate({ sku: newSku, itemCode: newItemCode, description: newItem.description, updateType: 'SKU_CHANGE', changes: [
+            { field: 'sku', oldValue: oldSku, newValue: newSku },
+            { field: 'location', oldValue: oldItem.fullLocation, newValue: newFullLocation }
+        ]});
 
         // Generate barcode for new SKU
         const barcode = await generateBarcode(newSku);

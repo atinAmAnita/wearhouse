@@ -19,6 +19,7 @@
             <button class="tab-btn active" data-tab="lookup">Scan/Lookup</button>
             <button class="tab-btn" data-tab="inventory">Inventory</button>
             <button class="tab-btn" data-tab="ebay">eBay Sync</button>
+            <button class="tab-btn" data-tab="updates">Updates <span id="updatesBadge" class="updates-badge hidden">0</span></button>
             <button class="tab-btn" data-tab="export">Export</button>
         </nav>
 
@@ -354,6 +355,40 @@
                         <button class="btn btn-primary" onclick="exportEbayToExcel()">Export to Excel</button>
                     </div>
                 </div>
+            </div>
+        </section>
+
+        <!-- Updates Tab -->
+        <section id="updates" class="tab-content">
+            <div class="inventory-header">
+                <h2>Pending Updates</h2>
+                <div class="inventory-stats">
+                    <span id="pendingCount" class="stat-badge">0 pending</span>
+                </div>
+            </div>
+            <p style="color: var(--text-muted); margin-bottom: 20px;">Changes made to your inventory that haven't been synced to eBay yet.</p>
+            <div class="inventory-controls" style="margin-bottom: 20px;">
+                <button class="btn btn-secondary" onclick="Updates.load()">Refresh</button>
+                <button class="btn btn-danger" onclick="Updates.dismissAll()">Dismiss All</button>
+            </div>
+            <div id="updatesEmpty" class="updates-empty hidden">
+                <div style="font-size: 48px; margin-bottom: 10px; opacity: 0.3;">&#10003;</div>
+                <h3>No pending updates</h3>
+                <p>Changes you make to inventory will appear here for review before syncing to eBay.</p>
+            </div>
+            <div class="table-container">
+                <table id="updatesTable">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>SKU</th>
+                            <th>Type</th>
+                            <th>Changes</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
             </div>
         </section>
 
