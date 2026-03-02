@@ -477,12 +477,16 @@ const ebayAPI = {
         let account = await data.getAccount(accountId);
         if (!account) throw new Error('Account not found');
 
-        if (!(await this.isAccountAuthenticated(accountId))) {
-            if (account.tokens?.refresh_token) {
+        // Refresh access token if expired or missing
+        if (!account.tokens?.access_token) {
+            throw new Error('Account not authenticated');
+        }
+        if (account.tokens.expires_at && Date.now() >= account.tokens.expires_at) {
+            if (account.tokens.refresh_token) {
                 await this.refreshAccessToken(accountId);
                 account = await data.getAccount(accountId);
             } else {
-                throw new Error('Account not authenticated');
+                throw new Error('Token expired - please reconnect eBay account');
             }
         }
 
@@ -498,7 +502,20 @@ const ebayAPI = {
         };
         if (body) options.body = JSON.stringify(body);
 
-        const response = await fetch(`${this.endpoints.api}${path}`, options);
+        let response = await fetch(`${this.endpoints.api}${path}`, options);
+
+        // If 401, try refreshing token once and retry
+        if (response.status === 401 && account.tokens?.refresh_token) {
+            try {
+                await this.refreshAccessToken(accountId);
+                account = await data.getAccount(accountId);
+                options.headers['Authorization'] = `Bearer ${account.tokens.access_token}`;
+                response = await fetch(`${this.endpoints.api}${path}`, options);
+            } catch (refreshErr) {
+                throw new Error('eBay session expired - please reconnect your account');
+            }
+        }
+
         if (response.status === 204) return { success: true };
         const responseData = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(responseData.errors?.[0]?.message || `API error: ${response.status}`);
