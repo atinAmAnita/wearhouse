@@ -1740,6 +1740,12 @@ app.post('/api/updates/:id/apply', async (req, res) => {
             }
         } catch (ebayErr) {
             console.warn('eBay sync failed (local update still applied):', ebayErr.message);
+            // eBay failed — return old values so frontend can offer undo
+            return res.json({
+                message: `Local update applied but eBay sync failed: ${ebayErr.message}`,
+                updateType, ebaySynced: false, ebayFailed: true,
+                undoData: { sku, updateType, changes }
+            });
         }
 
         // Mark update as applied
@@ -1753,6 +1759,37 @@ app.post('/api/updates/:id/apply', async (req, res) => {
         }
 
         res.json({ message: ebaySynced ? 'Update applied & synced to eBay' : 'Update applied locally', updateType, ebaySynced });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Undo a local update (revert to old values)
+app.post('/api/updates/undo', async (req, res) => {
+    try {
+        const { sku, updateType, changes } = req.body;
+        if (!sku || !changes) return res.status(400).json({ error: 'Missing undo data' });
+
+        if (updateType === 'UPDATE') {
+            const reverts = {};
+            for (const change of changes) {
+                if (change.field === 'quantity') reverts.currentQty = change.oldValue;
+                else if (change.field === 'price') reverts.price = change.oldValue;
+                else if (change.field === 'description') reverts.description = change.oldValue;
+            }
+            await data.updateItem(sku, reverts);
+            await data.addHistory(sku, { date: new Date(), action: 'UNDO', qty: 0, newTotal: reverts.currentQty || 0, note: 'Reverted — eBay sync failed' });
+        } else if (updateType === 'CREATE') {
+            await data.updateItem(sku, { staged: true });
+        } else if (updateType === 'DELETE') {
+            // Item was already deleted, re-create would need full data — just notify
+            return res.json({ message: 'Cannot undo delete — item data is gone' });
+        }
+
+        // Re-create the pending update so it shows back in the queue
+        await data.createPendingUpdate({ sku, updateType, changes, status: 'pending' });
+
+        res.json({ message: 'Change reverted successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

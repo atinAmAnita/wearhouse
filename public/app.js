@@ -92,6 +92,7 @@ const API = {
         dismiss: (id) => API.put(`/api/updates/${id}/dismiss`),
         dismissAll: () => API.put('/api/updates/dismiss-all'),
         apply: (id) => API.post(`/api/updates/${id}/apply`),
+        undo: (undoData) => API.post('/api/updates/undo', undoData),
     }
 };
 
@@ -1755,11 +1756,32 @@ const Updates = {
     async apply(id) {
         try {
             const result = await API.updates.apply(id);
+
+            if (result.ebayFailed && result.undoData) {
+                // eBay sync failed — ask user if they want to undo
+                const undo = confirm(`${result.message}\n\nLocal inventory was updated but eBay was NOT.\nUndo the local change?`);
+                if (undo) {
+                    try {
+                        await API.updates.undo(result.undoData);
+                        await this.load();
+                        Inventory.load();
+                        UI.notify('Change reverted — back in Updates queue', 'info');
+                        return;
+                    } catch (undoErr) {
+                        UI.notify('Undo failed: ' + undoErr.message, 'error');
+                    }
+                } else {
+                    // User chose to keep local change without eBay sync
+                    UI.notify('Local update kept — eBay not synced', 'info');
+                }
+            } else {
+                UI.notify(result.message || 'Update applied', 'success');
+            }
+
             this.allUpdates = this.allUpdates.filter(u => u._id !== id);
             this.render();
             this.refreshBadge();
             Inventory.load();
-            UI.notify(result.message || 'Update applied', 'success');
         } catch (err) {
             UI.notify(err.message, 'error');
         }
