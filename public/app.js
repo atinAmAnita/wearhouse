@@ -1451,13 +1451,18 @@ const eBay = {
         if (btn) { btn.disabled = true; btn.textContent = 'Comparing...'; }
 
         try {
-            const data = await fetch(`/api/ebay/compare/${accountId}`).then(r => r.json());
+            const result = await API.post(`/api/ebay/compare-and-queue/${accountId}`);
 
-            if (data.error) throw new Error(data.error);
+            if (result.error) throw new Error(result.error);
 
-            eBay.comparisonData = data;
-            eBay.showComparisonResults(data);
-            UI.notify(`Comparison complete: ${data.summary.differences} differences found`, 'success');
+            if (result.queued > 0) {
+                UI.notify(`${result.queued} differences queued in Updates tab`, 'success');
+                // Refresh updates and switch to Updates tab
+                await Updates.load();
+                document.querySelector('[data-tab="updates"]').click();
+            } else {
+                UI.notify('Everything is in sync!', 'success');
+            }
 
         } catch (err) {
             UI.notify(err.message, 'error');

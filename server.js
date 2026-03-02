@@ -2439,6 +2439,121 @@ app.get('/api/ebay/compare/:accountId', async (req, res) => {
     }
 });
 
+// Compare and queue differences as pending updates
+app.post('/api/ebay/compare-and-queue/:accountId', async (req, res) => {
+    try {
+        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
+            return res.status(401).json({ error: 'eBay account not connected' });
+        }
+
+        // Get all local items
+        const localItems = await data.getAllItems();
+        const localMap = new Map();
+        localItems.forEach(item => localMap.set(item.sku, item));
+
+        // Get eBay listings
+        const ebayData = await ebayAPI.getActiveListings(req.params.accountId);
+        if (ebayData.error) throw new Error(ebayData.error);
+
+        const ebayMap = new Map();
+        (ebayData.items || []).forEach(item => {
+            const sku = item.sku || item.itemId;
+            ebayMap.set(sku, item);
+        });
+
+        let queued = 0;
+
+        // Items in both but with differences — queue UPDATE
+        for (const [sku, localItem] of localMap) {
+            const ebayItem = ebayMap.get(sku);
+            if (!ebayItem) continue;
+
+            const localPrice = parseFloat(localItem.price) || 0;
+            const ebayPrice = parseFloat(ebayItem.price) || 0;
+            const localQty = parseInt(localItem.currentQty) || 0;
+            const ebayQty = parseInt(ebayItem.quantity) || 0;
+
+            const changes = [];
+            if (Math.abs(localPrice - ebayPrice) > 0.01) {
+                changes.push({ field: 'price', oldValue: localPrice, newValue: ebayPrice });
+            }
+            if (localQty !== ebayQty) {
+                changes.push({ field: 'quantity', oldValue: localQty, newValue: ebayQty });
+            }
+
+            if (changes.length > 0) {
+                await data.createPendingUpdate({
+                    sku,
+                    itemCode: localItem.itemCode,
+                    description: localItem.description,
+                    updateType: 'UPDATE',
+                    changes
+                });
+                queued++;
+            }
+        }
+
+        // Items on eBay but not local — queue CREATE
+        for (const [sku, ebayItem] of ebayMap) {
+            if (localMap.has(sku)) continue;
+
+            const ebayPrice = parseFloat(ebayItem.price) || 0;
+            const ebayQty = parseInt(ebayItem.quantity) || 0;
+
+            // Create staged item
+            const itemCode = sku.substring(0, 4);
+            const location = sku.substring(4);
+            const drawer = location.substring(0, 3);
+            const position = location.substring(3);
+            const fullLocation = `${drawer}-${position}`;
+
+            try {
+                await data.createItem({
+                    sku,
+                    itemCode,
+                    drawerNumber: drawer,
+                    positionNumber: position,
+                    fullLocation,
+                    price: ebayPrice,
+                    currentQty: ebayQty,
+                    description: ebayItem.title || '',
+                    staged: true,
+                    ebaySync: { ebayItemId: ebayItem.itemId, status: 'synced' }
+                });
+
+                await data.createPendingUpdate({
+                    sku,
+                    itemCode,
+                    description: ebayItem.title || '',
+                    updateType: 'CREATE',
+                    changes: [
+                        { field: 'quantity', oldValue: null, newValue: ebayQty },
+                        { field: 'price', oldValue: null, newValue: ebayPrice },
+                        { field: 'description', oldValue: null, newValue: ebayItem.title || '' },
+                        { field: 'location', oldValue: null, newValue: fullLocation }
+                    ]
+                });
+                queued++;
+            } catch (createErr) {
+                // SKU might already exist as staged, skip
+                console.warn(`Skipping eBay-only item ${sku}:`, createErr.message);
+            }
+        }
+
+        res.json({
+            message: `Comparison complete: ${queued} differences queued in Updates`,
+            queued,
+            summary: {
+                totalLocal: localItems.length,
+                totalEbay: ebayData.items?.length || 0
+            }
+        });
+    } catch (err) {
+        console.error('Compare-and-queue error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Resolve a difference - update local or push to eBay
 app.post('/api/ebay/resolve/:accountId', async (req, res) => {
     try {
