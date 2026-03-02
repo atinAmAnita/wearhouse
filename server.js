@@ -178,7 +178,7 @@ const data = {
             return accounts.map(a => ({
                 id: a.accountId,
                 name: a.name,
-                hasValidToken: !!a.tokens?.refresh_token && (!a.tokens?.expires_at || Date.now() < a.tokens.expires_at),
+                hasValidToken: !!a.tokens?.refresh_token,
                 lastSync: a.lastSync,
                 addedAt: a.addedAt || a.createdAt
             }));
@@ -186,7 +186,7 @@ const data = {
         return Object.entries(localAccounts).map(([id, acc]) => ({
             id,
             name: acc.name,
-            hasValidToken: !!acc.tokens?.refresh_token && (!acc.tokens?.expires_at || Date.now() < acc.tokens.expires_at),
+            hasValidToken: !!acc.tokens?.refresh_token,
             lastSync: acc.lastSync,
             addedAt: acc.addedAt || acc.createdAt
         }));
