@@ -709,7 +709,7 @@ const History = {
                         <div class="history-entry ${cls}">
                             <div class="history-icon">${icon}</div>
                             <span class="history-action">${label}</span>
-                            <span class="history-qty">${entry.action === 'PRICE_CHANGE' ? `${entry.qty >= 0 ? '+' : ''}$${entry.qty}` : `${entry.qty >= 0 ? '+' : ''}${entry.qty}`}</span>
+                            <span class="history-qty">${entry.action === 'PRICE_CHANGE' ? `$${entry.newTotal - entry.qty} ${entry.qty >= 0 ? '+' : ''} $${Math.abs(entry.qty)}` : `${entry.newTotal - entry.qty} ${entry.qty >= 0 ? '+' : ''} ${Math.abs(entry.qty)}`}</span>
                             <span class="history-date">${UI.formatDateTime(entry.date)}</span>
                             ${entry.note ? `<span class="history-note">${entry.note}</span>` : ''}
                         </div>
