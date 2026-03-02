@@ -1657,7 +1657,7 @@ app.post('/api/updates/:id/apply', async (req, res) => {
                 if (change.field === 'quantity') {
                     updates.currentQty = change.newValue;
                     const diff = change.newValue - item.currentQty;
-                    await data.addHistory(sku, { date: new Date(), action: diff >= 0 ? 'ADJUST_UP' : 'ADJUST_DOWN', qty: diff, newTotal: change.newValue, note: `Quantity adjusted from ${item.currentQty} to ${change.newValue}` });
+                    await data.addHistory(sku, { date: new Date(), action: diff >= 0 ? 'ADJUST_UP' : 'ADJUST_DOWN', qty: diff, newTotal: change.newValue, note: `Quantity changed to ${change.newValue}` });
                 } else if (change.field === 'price') {
                     updates.price = change.newValue;
                     const priceDiff = change.newValue - item.price;
