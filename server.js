@@ -19,7 +19,13 @@ const DB_MODE = USE_LOCAL_DB ? 'local' : 'mongodb';
 
 // Middleware
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html') || filePath.endsWith('.js') || filePath.endsWith('.css')) {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        }
+    }
+}));
 
 // ============================================
 // LOCAL JSON STORAGE (only used when USE_LOCAL_DB=true)
