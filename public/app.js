@@ -434,8 +434,11 @@ const Lookup = {
 
         try {
             await API.inventory.update(State.currentItem.SKU, { quantity: newQty });
-            // Don't update State or DOM - change is only queued
-            UI.notify(`Quantity change queued (${State.currentItem.Quantity} → ${newQty})`, 'success');
+            // Update local state so successive clicks stack correctly
+            State.currentItem.Quantity = newQty;
+            const qtyEl = document.querySelector('#lookupResult .qty-display, #currentQty');
+            if (qtyEl) qtyEl.textContent = newQty;
+            UI.notify(`Quantity change queued (${newQty - delta} → ${newQty})`, 'success');
             Updates.refreshBadge();
         } catch (err) {
             UI.notify(err.message, 'error');
@@ -449,8 +452,10 @@ const Lookup = {
 
         try {
             await API.inventory.update(State.currentItem.SKU, { price: newPrice });
-            // Don't update State or DOM - change is only queued
-            UI.notify(`Price change queued ($${State.currentItem.Price.toFixed(2)} → $${newPrice.toFixed(2)})`, 'success');
+            // Update local state so successive changes track correctly
+            const oldPrice = State.currentItem.Price;
+            State.currentItem.Price = newPrice;
+            UI.notify(`Price change queued ($${oldPrice.toFixed(2)} → $${newPrice.toFixed(2)})`, 'success');
             Updates.refreshBadge();
         } catch (err) {
             UI.notify(err.message, 'error');
@@ -709,7 +714,7 @@ const History = {
                         <div class="history-entry ${cls}">
                             <div class="history-icon">${icon}</div>
                             <span class="history-action">${label}</span>
-                            <span class="history-qty">${entry.action === 'PRICE_CHANGE' ? `$${entry.newTotal - entry.qty} ${entry.qty >= 0 ? '+' : ''} $${Math.abs(entry.qty)}` : `${entry.newTotal - entry.qty} ${entry.qty >= 0 ? '+' : ''} ${Math.abs(entry.qty)}`}</span>
+                            <span class="history-qty">${entry.action === 'PRICE_CHANGE' ? `$${entry.newTotal - entry.qty} ${entry.qty >= 0 ? '+' : '-'} $${Math.abs(entry.qty)}` : `${entry.newTotal - entry.qty} ${entry.qty >= 0 ? '+' : '-'} ${Math.abs(entry.qty)}`}</span>
                             <span class="history-date">${UI.formatDateTime(entry.date)}</span>
                             ${entry.note ? `<span class="history-note">${entry.note}</span>` : ''}
                         </div>
