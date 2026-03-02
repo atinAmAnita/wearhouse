@@ -1754,12 +1754,12 @@ const Updates = {
 
     async apply(id) {
         try {
-            await API.updates.apply(id);
+            const result = await API.updates.apply(id);
             this.allUpdates = this.allUpdates.filter(u => u._id !== id);
             this.render();
             this.refreshBadge();
             Inventory.load();
-            UI.notify('Update applied', 'success');
+            UI.notify(result.message || 'Update applied', 'success');
         } catch (err) {
             UI.notify(err.message, 'error');
         }

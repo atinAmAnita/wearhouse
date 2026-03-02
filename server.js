@@ -1617,8 +1617,15 @@ app.get('/api/updates/count', async (req, res) => {
 
 app.put('/api/updates/:id/dismiss', async (req, res) => {
     try {
+        // Fetch update first to check type
+        const allPending = await data.getPendingUpdates('pending');
+        const pending = allPending.find(u => u._id.toString() === req.params.id);
         const update = await data.dismissPendingUpdate(req.params.id);
         if (!update) return res.status(404).json({ error: 'Update not found' });
+        // If dismissing a CREATE, delete the orphaned staged item
+        if (pending && pending.updateType === 'CREATE') {
+            await data.deleteItem(pending.sku);
+        }
         res.json({ message: 'Update dismissed', update });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1627,6 +1634,12 @@ app.put('/api/updates/:id/dismiss', async (req, res) => {
 
 app.put('/api/updates/dismiss-all', async (req, res) => {
     try {
+        // Find all pending CREATE updates to clean up staged items
+        const allPending = await data.getPendingUpdates('pending');
+        const creates = allPending.filter(u => u.updateType === 'CREATE');
+        for (const create of creates) {
+            await data.deleteItem(create.sku);
+        }
         await data.dismissAllPendingUpdates();
         res.json({ message: 'All updates dismissed' });
     } catch (err) {
@@ -1695,6 +1708,40 @@ app.post('/api/updates/:id/apply', async (req, res) => {
             await data.deleteItem(sku);
         }
 
+        // Also push change to eBay if item has an eBay listing
+        let ebaySynced = false;
+        try {
+            const accounts = await data.getAllAccounts();
+            const activeAccount = accounts.find(a => a.hasValidToken);
+            if (activeAccount && updateType !== 'CREATE') {
+                const updatedItem = updateType === 'DELETE' ? null : await data.getItem(updateType === 'SKU_CHANGE' ? changes.find(c => c.field === 'sku')?.newValue : sku);
+                if (updatedItem && updatedItem.ebaySync?.ebayItemId) {
+                    // Sync inventory item (quantity, description) to eBay
+                    const warehouseItem = formatItem(updatedItem);
+                    await ebayAPI.syncItemToEbay(activeAccount.id, warehouseItem);
+                    // Update price on eBay offer if price changed
+                    const priceChange = changes.find(c => c.field === 'price');
+                    if (priceChange) {
+                        try {
+                            const offersData = await ebayAPI.getOffers(activeAccount.id, updatedItem.sku);
+                            if (offersData.offers?.length > 0) {
+                                const offer = offersData.offers[0];
+                                offer.pricingSummary = { price: { value: String(priceChange.newValue), currency: offer.pricingSummary?.price?.currency || 'USD' } };
+                                await ebayAPI.apiRequest(activeAccount.id, 'PUT', `/sell/inventory/v1/offer/${offer.offerId}`, offer);
+                            }
+                        } catch (offerErr) {
+                            console.warn('Could not update eBay offer price:', offerErr.message);
+                        }
+                    }
+                    ebaySynced = true;
+                } else if (updateType === 'DELETE' && updatedItem === null) {
+                    // Item was deleted - eBay listing remains (user manages separately)
+                }
+            }
+        } catch (ebayErr) {
+            console.warn('eBay sync failed (local update still applied):', ebayErr.message);
+        }
+
         // Mark update as applied
         await data.dismissPendingUpdate(req.params.id);
         // Update status to 'pushed' instead of 'dismissed'
@@ -1705,7 +1752,7 @@ app.post('/api/updates/:id/apply', async (req, res) => {
             if (localUpdate) { localUpdate.status = 'pushed'; saveLocalData(); }
         }
 
-        res.json({ message: 'Update applied successfully', updateType });
+        res.json({ message: ebaySynced ? 'Update applied & synced to eBay' : 'Update applied locally', updateType, ebaySynced });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
