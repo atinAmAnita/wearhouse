@@ -1171,12 +1171,17 @@ const eBay = {
     populateAccounts() {
         // Selector
         const select = UI.el('accountSelect');
+        const activeAccounts = State.ebayAccounts.filter(a => a.hasValidToken);
         select.innerHTML = '<option value="">-- Select Account --</option>' +
             State.ebayAccounts.map(acc =>
                 `<option value="${acc.id}" ${!acc.hasValidToken ? 'disabled' : ''}>
                     ${acc.name} ${!acc.hasValidToken ? '(Token Expired)' : ''}
                 </option>`
             ).join('');
+        // Auto-select if only one active account
+        if (activeAccounts.length === 1) {
+            select.value = activeAccounts[0].id;
+        }
 
         // List
         UI.setHTML('accountsContainer', State.ebayAccounts.map(acc => `
