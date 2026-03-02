@@ -2492,7 +2492,7 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// Keep tokens alive - ping this endpoint regularly (e.g., every hour via UptimeRobot/cron)
+// Keep tokens alive - called every 30 mins by Vercel Cron to prevent token expiry
 app.get('/api/keep-alive', async (req, res) => {
     const results = { refreshed: [], failed: [], skipped: [] };
 
@@ -2509,12 +2509,19 @@ app.get('/api/keep-alive', async (req, res) => {
                 // Get full account data to check token expiry
                 const fullAccount = await data.getAccount(account.id);
 
-                // Refresh if token expires in less than 1 hour
-                const oneHour = 60 * 60 * 1000;
-                if (fullAccount?.tokens?.expires_at && (fullAccount.tokens.expires_at - Date.now() < oneHour)) {
+                // Always refresh if token expires within 2 hours (since cron runs every 30 min)
+                const twoHours = 2 * 60 * 60 * 1000;
+                if (fullAccount?.tokens?.refresh_token &&
+                    fullAccount?.tokens?.expires_at &&
+                    (fullAccount.tokens.expires_at - Date.now() < twoHours)) {
                     await ebayAPI.refreshAccessToken(account.id);
                     results.refreshed.push(account.id);
                     console.log(`Keep-alive: Refreshed token for ${account.name}`);
+                } else if (fullAccount?.tokens?.refresh_token && !fullAccount?.tokens?.expires_at) {
+                    // No expiry set, refresh anyway to be safe
+                    await ebayAPI.refreshAccessToken(account.id);
+                    results.refreshed.push(account.id);
+                    console.log(`Keep-alive: Refreshed token for ${account.name} (no expiry set)`);
                 } else {
                     results.skipped.push({ id: account.id, reason: 'token still valid' });
                 }
