@@ -1191,10 +1191,12 @@ const eBay = {
                     <span style="display: inline-block; padding: 2px 8px; font-size: 0.8rem; margin-left: 10px; ${acc.hasValidToken ? 'color: var(--success);' : 'color: var(--danger);'}">
                         ${acc.hasValidToken ? 'Active' : 'Expired'}
                     </span>
+                    ${acc.tokenError ? `<p style="margin: 5px 0 0 0; color: var(--danger); font-size: 0.85rem;">${acc.tokenError}</p>` : ''}
                     <p style="margin: 5px 0 0 0; color: var(--text-muted); font-size: 0.9rem;">
                         ${acc.lastSync ? 'Last sync: ' + UI.formatDateTime(acc.lastSync) : 'Never synced'}
                     </p>
                 </div>
+                ${!acc.hasValidToken ? `<a href="/admin" style="color: var(--danger); font-size: 0.85rem; text-decoration: underline;">Reconnect</a>` : ''}
             </div>
         `).join(''));
     },

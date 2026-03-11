@@ -1554,10 +1554,24 @@ const ebayAPI = {
     },
 
     async getStatus() {
+        const accounts = await data.getAllAccounts();
+
+        // Verify tokens are actually working for each account
+        for (const account of accounts) {
+            if (account.hasValidToken) {
+                try {
+                    await this.refreshAccessToken(account.id);
+                } catch (err) {
+                    account.hasValidToken = false;
+                    account.tokenError = err.message;
+                }
+            }
+        }
+
         return {
             configured: config.isEbayConfigured(),
             environment: config.ebay.environment,
-            accounts: await data.getAllAccounts()
+            accounts
         };
     }
 };
