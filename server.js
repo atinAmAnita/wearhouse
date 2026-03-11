@@ -349,11 +349,30 @@ const ebayAPI = {
     async isAccountAuthenticated(accountId) {
         const account = await data.getAccount(accountId);
         if (!account?.tokens?.access_token) return false;
-        // If access token expired but refresh token exists, we can still authenticate (will auto-refresh)
         if (account.tokens.expires_at && Date.now() >= account.tokens.expires_at) {
             return !!account.tokens.refresh_token;
         }
         return true;
+    },
+
+    // Ensure account has a fresh access token, refreshing if needed. Returns the account.
+    async ensureFreshToken(accountId) {
+        let account = await data.getAccount(accountId);
+        if (!account) throw new Error('Account not found');
+        if (!account.tokens?.access_token && !account.tokens?.refresh_token) {
+            throw new Error('Account not authenticated');
+        }
+        const tokenExpired = !account.tokens?.access_token || !account.tokens.expires_at || Date.now() >= account.tokens.expires_at;
+        if (tokenExpired) {
+            if (account.tokens?.refresh_token) {
+                console.log(`Token expired for ${accountId}, refreshing...`);
+                await this.refreshAccessToken(accountId);
+                account = await data.getAccount(accountId);
+            } else {
+                throw new Error('Token expired - please reconnect eBay account');
+            }
+        }
+        return account;
     },
 
     getAuthUrl(accountName) {
@@ -542,18 +561,7 @@ const ebayAPI = {
 
     // Purchase History (Trading API - XML based)
     async getPurchaseHistory(accountId, days = 30) {
-        let account = await data.getAccount(accountId);
-        if (!account) throw new Error('Account not found');
-
-        // Refresh token if needed (same logic as apiRequest)
-        if (!(await this.isAccountAuthenticated(accountId))) {
-            if (account.tokens?.refresh_token) {
-                await this.refreshAccessToken(accountId);
-                account = await data.getAccount(accountId);
-            } else {
-                throw new Error('Account not authenticated');
-            }
-        }
+        let account = await this.ensureFreshToken(accountId);
 
         const token = account.tokens.access_token;
         const tradingEndpoint = config.ebay.environment === 'production'
