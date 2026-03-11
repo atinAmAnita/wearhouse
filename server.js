@@ -477,12 +477,14 @@ const ebayAPI = {
         let account = await data.getAccount(accountId);
         if (!account) throw new Error('Account not found');
 
-        // Refresh access token if expired or missing
-        if (!account.tokens?.access_token) {
+        // Refresh access token if expired, missing, or no expiry timestamp
+        if (!account.tokens?.access_token && !account.tokens?.refresh_token) {
             throw new Error('Account not authenticated');
         }
-        if (account.tokens.expires_at && Date.now() >= account.tokens.expires_at) {
-            if (account.tokens.refresh_token) {
+        const tokenExpired = !account.tokens?.access_token || !account.tokens.expires_at || Date.now() >= account.tokens.expires_at;
+        if (tokenExpired) {
+            if (account.tokens?.refresh_token) {
+                console.log(`Token expired for ${accountId}, refreshing...`);
                 await this.refreshAccessToken(accountId);
                 account = await data.getAccount(accountId);
             } else {
