@@ -91,7 +91,7 @@ const API = {
         getCount: () => API.get('/api/updates/count'),
         dismiss: (id) => API.put(`/api/updates/${id}/dismiss`),
         dismissAll: () => API.put('/api/updates/dismiss-all'),
-        apply: (id) => API.post(`/api/updates/${id}/apply`),
+        apply: (id, accountId) => API.post(`/api/updates/${id}/apply`, { accountId }),
         undo: (undoData) => API.post('/api/updates/undo', undoData),
     }
 };
@@ -376,7 +376,11 @@ const Lookup = {
 
             const lookupDetailsEl = resultPanel.querySelector('.item-details');
             if (lookupDetailsEl) {
+                const imageHtml = data.item.ImageUrl
+                    ? `<div class="item-image"><img src="${data.item.ImageUrl}" alt="${data.item.SKU}" onerror="this.parentElement.style.display='none'"></div>`
+                    : '';
                 lookupDetailsEl.innerHTML = `
+                    ${imageHtml}
                     <p><strong>SKU:</strong> ${data.item.SKU}</p>
                     <p><strong>Location:</strong> Drawer ${data.item.DrawerNumber}, Position ${data.item.PositionNumber}</p>
                     <p class="item-price"><strong>Price:</strong> $${parseFloat(data.item.Price || 0).toFixed(2)}</p>
@@ -1169,8 +1173,9 @@ const eBay = {
     },
 
     populateAccounts() {
-        // Selector
+        // Selector — preserve current selection
         const select = UI.el('accountSelect');
+        const previousSelection = select.value;
         const activeAccounts = State.ebayAccounts.filter(a => a.hasValidToken);
         select.innerHTML = '<option value="">-- Select Account --</option>' +
             State.ebayAccounts.map(acc =>
@@ -1178,8 +1183,10 @@ const eBay = {
                     ${acc.name} ${!acc.hasValidToken ? '(Token Expired)' : ''}
                 </option>`
             ).join('');
-        // Auto-select if only one active account
-        if (activeAccounts.length === 1) {
+        // Restore previous selection if still valid, otherwise auto-select if only one
+        if (previousSelection && [...select.options].some(o => o.value === previousSelection && !o.disabled)) {
+            select.value = previousSelection;
+        } else if (activeAccounts.length === 1) {
             select.value = activeAccounts[0].id;
         }
 
@@ -1795,7 +1802,12 @@ const Updates = {
 
     async apply(id) {
         try {
-            const result = await API.updates.apply(id);
+            const accountId = eBay.getSelectedAccount();
+            if (!accountId) {
+                UI.notify('Please select an eBay account first (eBay Sync tab)', 'error');
+                return;
+            }
+            const result = await API.updates.apply(id, accountId);
 
             if (result.ebayFailed && result.undoData) {
                 // eBay sync failed — ask user if they want to undo

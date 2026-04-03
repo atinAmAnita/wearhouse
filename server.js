@@ -289,6 +289,7 @@ function formatItem(item) {
         Price: item.price || 0,
         Quantity: item.currentQty,
         Description: item.description,
+        ImageUrl: item.imageUrl || null,
         DateAdded: item.dateAdded,
         LastModified: item.lastModified,
         Staged: item.staged || false
@@ -553,6 +554,69 @@ const ebayAPI = {
     async createOffer(accountId, offerData) { return this.apiRequest(accountId, 'POST', '/sell/inventory/v1/offer', offerData); },
     async publishOffer(accountId, offerId) { return this.apiRequest(accountId, 'POST', `/sell/inventory/v1/offer/${offerId}/publish`); },
     async deleteOffer(accountId, offerId) { return this.apiRequest(accountId, 'DELETE', `/sell/inventory/v1/offer/${offerId}`); },
+
+    // Revise listing via Trading API (for legacy listings not managed by Inventory API)
+    async reviseItemPrice(accountId, ebayItemId, newPrice, newQuantity = null) {
+        let account = await this.ensureFreshToken(accountId);
+        const token = account.tokens.access_token;
+        const tradingEndpoint = config.ebay.environment === 'production'
+            ? 'https://api.ebay.com/ws/api.dll'
+            : 'https://api.sandbox.ebay.com/ws/api.dll';
+
+        let quantityXml = '';
+        if (newQuantity !== null) {
+            quantityXml = `<Quantity>${newQuantity}</Quantity>`;
+        }
+
+        const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
+<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+    <RequesterCredentials>
+        <eBayAuthToken>${token}</eBayAuthToken>
+    </RequesterCredentials>
+    <Item>
+        <ItemID>${ebayItemId}</ItemID>
+        <StartPrice currencyID="USD">${parseFloat(newPrice).toFixed(2)}</StartPrice>
+        ${quantityXml}
+    </Item>
+    <ErrorLanguage>en_US</ErrorLanguage>
+    <WarningLevel>High</WarningLevel>
+</ReviseFixedPriceItemRequest>`;
+
+        const response = await fetch(tradingEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'text/xml',
+                'X-EBAY-API-SITEID': '0',
+                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+                'X-EBAY-API-CALL-NAME': 'ReviseFixedPriceItem',
+                'X-EBAY-API-IAF-TOKEN': token
+            },
+            body: xmlRequest
+        });
+
+        const xmlText = await response.text();
+        const ackMatch = xmlText.match(/<Ack>([^<]+)<\/Ack>/);
+        const ack = ackMatch ? ackMatch[1] : 'Unknown';
+
+        if (ack === 'Failure') {
+            // Parse all errors — only look at SeverityCode=Error, ignore Warnings
+            const errorBlocks = [...xmlText.matchAll(/<Errors>([\s\S]*?)<\/Errors>/g)];
+            const realErrors = errorBlocks
+                .filter(m => m[1].includes('<SeverityCode>Error</SeverityCode>'))
+                .map(m => {
+                    const short = m[1].match(/<ShortMessage>([^<]*)<\/ShortMessage>/)?.[1] || '';
+                    const long = m[1].match(/<LongMessage>([^<]*)<\/LongMessage>/)?.[1] || '';
+                    const code = m[1].match(/<ErrorCode>([^<]*)<\/ErrorCode>/)?.[1] || '';
+                    return { short, long, code };
+                });
+            if (realErrors.length > 0) {
+                throw new Error(realErrors.map(e => e.long || e.short).join('; '));
+            }
+            // Only warnings, no real errors — treat as success
+        }
+
+        return { success: true, ack };
+    },
 
     // Business Policies (needed for offers)
     async getFulfillmentPolicies(accountId, marketplaceId = 'EBAY_US') { return this.apiRequest(accountId, 'GET', `/sell/account/v1/fulfillment_policy?marketplace_id=${marketplaceId}`); },
@@ -865,6 +929,10 @@ const ebayAPI = {
             // For fixed-price items, price can be in StartPrice, BuyItNowPrice, or CurrentPrice
             const price = getTag('StartPrice') || getTag('BuyItNowPrice') || getTag('CurrentPrice') || '0';
 
+            // Extract first picture URL from PictureDetails
+            const picMatch = itemXml.match(/<PictureURL>([^<]+)<\/PictureURL>/);
+            const pictureUrl = picMatch ? picMatch[1] : null;
+
             items.push({
                 itemId: getTag('ItemID'),
                 sku: getTag('SKU') || getTag('ItemID'),
@@ -876,7 +944,8 @@ const ebayAPI = {
                 listingType: getTag('ListingType'),
                 startTime: getTag('StartTime'),
                 endTime: getTag('EndTime'),
-                viewCount: getTag('HitCount') || '0'
+                viewCount: getTag('HitCount') || '0',
+                pictureUrl
             });
         }
 
@@ -1374,7 +1443,7 @@ const ebayAPI = {
                     continue;
                 }
 
-                // Safe to push
+                // Safe to push — sync inventory item (qty, title, description)
                 await this.syncItemToEbay(accountId, {
                     SKU: fullItem.sku,
                     Price: fullItem.price || 0,
@@ -1384,6 +1453,33 @@ const ebayAPI = {
                     Condition: fullItem.condition || 'NEW',
                     ItemSpecifics: fullItem.itemSpecifics || {}
                 });
+
+                // Also update price on eBay (price lives on Offer, not inventory item)
+                const localPrice = fullItem.price || 0;
+                const ebayPrice = parseFloat(ebayItem.price) || 0;
+                if (Math.abs(localPrice - ebayPrice) > 0.01) {
+                    let offerUpdated = false;
+                    try {
+                        const offersData = await this.getOffers(accountId, sku);
+                        if (offersData.offers?.length > 0) {
+                            const offer = offersData.offers[0];
+                            offer.pricingSummary = { price: { value: String(localPrice), currency: offer.pricingSummary?.price?.currency || 'USD' } };
+                            await this.apiRequest(accountId, 'PUT', `/sell/inventory/v1/offer/${offer.offerId}`, offer);
+                            offerUpdated = true;
+                        }
+                    } catch (offerErr) {
+                        console.warn(`Offer API failed for ${sku}, trying Trading API:`, offerErr.message);
+                    }
+                    // Fallback: Trading API for legacy listings
+                    if (!offerUpdated && ebayItem.itemId) {
+                        try {
+                            await this.reviseItemPrice(accountId, ebayItem.itemId, localPrice, fullItem.currentQty);
+                            console.log(`Updated eBay listing ${ebayItem.itemId} price via Trading API`);
+                        } catch (tradingErr) {
+                            console.warn(`Trading API price update failed for ${sku}:`, tradingErr.message);
+                        }
+                    }
+                }
 
                 // Update sync tracking
                 await data.updateItem(sku, {
@@ -1749,31 +1845,64 @@ app.post('/api/updates/:id/apply', async (req, res) => {
             await data.deleteItem(sku);
         }
 
-        // Also push change to eBay if item has an eBay listing
+        // Push change to eBay — only if user has selected an account
         let ebaySynced = false;
+        const requestedAccountId = req.body?.accountId;
+        if (!requestedAccountId) {
+            return res.status(400).json({ error: 'Please select an eBay account first' });
+        }
         try {
             const accounts = await data.getAllAccounts();
-            const activeAccount = accounts.find(a => a.hasValidToken);
+            const activeAccount = accounts.find(a => a.id === requestedAccountId || a.accountId === requestedAccountId);
             if (activeAccount && updateType !== 'CREATE') {
                 const updatedItem = updateType === 'DELETE' ? null : await data.getItem(updateType === 'SKU_CHANGE' ? changes.find(c => c.field === 'sku')?.newValue : sku);
                 if (updatedItem && updatedItem.ebaySync?.ebayItemId) {
                     // Sync inventory item (quantity, description) to eBay
                     const warehouseItem = formatItem(updatedItem);
                     await ebayAPI.syncItemToEbay(activeAccount.id, warehouseItem);
-                    // Update price on eBay offer if price changed
+                    // Update price/quantity on eBay
                     const priceChange = changes.find(c => c.field === 'price');
-                    if (priceChange) {
-                        try {
-                            const offersData = await ebayAPI.getOffers(activeAccount.id, updatedItem.sku);
-                            if (offersData.offers?.length > 0) {
-                                const offer = offersData.offers[0];
-                                offer.pricingSummary = { price: { value: String(priceChange.newValue), currency: offer.pricingSummary?.price?.currency || 'USD' } };
-                                await ebayAPI.apiRequest(activeAccount.id, 'PUT', `/sell/inventory/v1/offer/${offer.offerId}`, offer);
+                    const qtyChange = changes.find(c => c.field === 'quantity');
+                    if (priceChange || qtyChange) {
+                        let offerUpdated = false;
+                        // Try Inventory API Offer first
+                        if (priceChange) {
+                            try {
+                                const offersData = await ebayAPI.getOffers(activeAccount.id, updatedItem.sku);
+                                if (offersData.offers?.length > 0) {
+                                    const offer = offersData.offers[0];
+                                    offer.pricingSummary = { price: { value: String(priceChange.newValue), currency: offer.pricingSummary?.price?.currency || 'USD' } };
+                                    await ebayAPI.apiRequest(activeAccount.id, 'PUT', `/sell/inventory/v1/offer/${offer.offerId}`, offer);
+                                    offerUpdated = true;
+                                }
+                            } catch (offerErr) {
+                                console.warn('Offer API failed, will try Trading API:', offerErr.message);
                             }
-                        } catch (offerErr) {
-                            console.warn('Could not update eBay offer price:', offerErr.message);
+                        }
+                        // Fallback: use Trading API ReviseFixedPriceItem for legacy listings
+                        if (!offerUpdated && updatedItem.ebaySync?.ebayItemId) {
+                            try {
+                                await ebayAPI.reviseItemPrice(
+                                    activeAccount.id,
+                                    updatedItem.ebaySync.ebayItemId,
+                                    priceChange ? priceChange.newValue : updatedItem.price,
+                                    qtyChange ? qtyChange.newValue : null
+                                );
+                                console.log(`Updated eBay listing ${updatedItem.ebaySync.ebayItemId} via Trading API`);
+                            } catch (tradingErr) {
+                                console.warn('Trading API update also failed:', tradingErr.message);
+                            }
                         }
                     }
+                    // Update the sync snapshot
+                    await data.updateItem(sku, {
+                        ebaySync: {
+                            ...updatedItem.ebaySync,
+                            snapshot: ebayAPI.captureLocalSnapshot(updatedItem),
+                            lastSyncTime: new Date(),
+                            status: 'synced'
+                        }
+                    });
                     ebaySynced = true;
                 } else if (updateType === 'DELETE' && updatedItem === null) {
                     // Item was deleted - eBay listing remains (user manages separately)
@@ -2078,6 +2207,60 @@ app.get('/api/export/ebay', async (req, res) => {
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename=ebay_inventory.csv');
     res.send(csv);
+});
+
+// Debug: Test revise item price on eBay (returns raw XML for debugging)
+app.get('/api/debug/revise-test/:accountId/:itemId/:price', async (req, res) => {
+    try {
+        const { accountId, itemId, price } = req.params;
+        let account = await ebayAPI.ensureFreshToken(accountId);
+        const token = account.tokens.access_token;
+        const tradingEndpoint = config.ebay.environment === 'production'
+            ? 'https://api.ebay.com/ws/api.dll'
+            : 'https://api.sandbox.ebay.com/ws/api.dll';
+
+        const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
+<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+    <RequesterCredentials>
+        <eBayAuthToken>${token}</eBayAuthToken>
+    </RequesterCredentials>
+    <Item>
+        <ItemID>${itemId}</ItemID>
+        <StartPrice currencyID="USD">${parseFloat(price).toFixed(2)}</StartPrice>
+    </Item>
+    <ErrorLanguage>en_US</ErrorLanguage>
+    <WarningLevel>High</WarningLevel>
+</ReviseFixedPriceItemRequest>`;
+
+        const response = await fetch(tradingEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'text/xml',
+                'X-EBAY-API-SITEID': '0',
+                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+                'X-EBAY-API-CALL-NAME': 'ReviseFixedPriceItem',
+                'X-EBAY-API-IAF-TOKEN': token
+            },
+            body: xmlRequest
+        });
+
+        const xmlText = await response.text();
+        // Return raw XML and parsed ack
+        const ackMatch = xmlText.match(/<Ack>([^<]+)<\/Ack>/);
+        res.json({ ack: ackMatch?.[1], rawXml: xmlText });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Debug: Check what getOffers returns for a SKU
+app.get('/api/debug/offers/:accountId/:sku', async (req, res) => {
+    try {
+        const result = await ebayAPI.getOffers(req.params.accountId, req.params.sku);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Debug: Pull listings directly from eBay and export to Excel
@@ -2531,6 +2714,11 @@ app.post('/api/ebay/compare-and-queue/:accountId', async (req, res) => {
                 changes.push({ field: 'quantity', oldValue: localQty, newValue: ebayQty });
             }
 
+            // Update image URL if eBay has one and local doesn't
+            if (ebayItem.pictureUrl && !localItem.imageUrl) {
+                await data.updateItem(sku, { imageUrl: ebayItem.pictureUrl });
+            }
+
             if (changes.length === 0) continue;
 
             // Check for conflict with existing pending updates
@@ -2581,6 +2769,7 @@ app.post('/api/ebay/compare-and-queue/:accountId', async (req, res) => {
                     price: ebayPrice,
                     currentQty: ebayQty,
                     description: ebayItem.title || '',
+                    imageUrl: ebayItem.pictureUrl || null,
                     staged: true,
                     ebaySync: { ebayItemId: ebayItem.itemId, status: 'synced' }
                 });

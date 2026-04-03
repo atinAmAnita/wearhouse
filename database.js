@@ -39,6 +39,7 @@ const inventoryItemSchema = new mongoose.Schema({
     price: { type: Number, default: 0 },
     currentQty: { type: Number, default: 0 },
     description: { type: String, default: '' },
+    imageUrl: { type: String, default: null },
     categoryId: { type: String, default: null },
     categoryName: { type: String, default: null },
     condition: { type: String, default: null },
