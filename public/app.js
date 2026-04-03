@@ -637,7 +637,11 @@ const Inventory = {
 
         pageItems.forEach(item => {
             const row = document.createElement('tr');
+            const thumb = item.ImageUrl
+                ? `<img src="${item.ImageUrl}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:4px;" onerror="this.style.display='none'">`
+                : '<span style="display:inline-block;width:36px;height:36px;background:var(--bg-input);border-radius:4px;"></span>';
             row.innerHTML = `
+                <td style="width:40px;padding:4px;">${thumb}</td>
                 <td>${item.SKU}</td>
                 <td>${item.FullLocation}</td>
                 <td>$${parseFloat(item.Price || 0).toFixed(2)}</td>
@@ -1173,9 +1177,9 @@ const eBay = {
     },
 
     populateAccounts() {
-        // Selector — preserve current selection
+        // Selector — preserve current selection (from DOM or localStorage)
         const select = UI.el('accountSelect');
-        const previousSelection = select.value;
+        const previousSelection = select.value || localStorage.getItem('selectedEbayAccount') || '';
         const activeAccounts = State.ebayAccounts.filter(a => a.hasValidToken);
         select.innerHTML = '<option value="">-- Select Account --</option>' +
             State.ebayAccounts.map(acc =>
@@ -1189,6 +1193,8 @@ const eBay = {
         } else if (activeAccounts.length === 1) {
             select.value = activeAccounts[0].id;
         }
+        // Persist selection on change
+        select.onchange = () => localStorage.setItem('selectedEbayAccount', select.value);
 
         // List
         UI.setHTML('accountsContainer', State.ebayAccounts.map(acc => `

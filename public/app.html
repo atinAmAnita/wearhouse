@@ -163,6 +163,7 @@
                 <table id="inventoryTable">
                     <thead>
                         <tr>
+                            <th style="width: 40px;"></th>
                             <th class="sortable" onclick="Inventory.sortBy('sku')">SKU</th>
                             <th class="sortable" onclick="Inventory.sortBy('location')">Location</th>
                             <th class="sortable" onclick="Inventory.sortBy('price')">Price</th>
@@ -269,6 +270,7 @@
                     <button class="btn btn-warning" onclick="eBay.compare()" id="compareBtn" style="background: #ff9800; border-color: #ff9800;">Compare with eBay</button>
                     <button class="btn btn-success" onclick="eBay.push()" id="pushBtn" style="background: #2e7d32; border-color: #2e7d32;">Push to eBay</button>
                     <button class="btn btn-primary" onclick="eBay.sync()" id="syncBtn" style="background: #1565c0; border-color: #1565c0;">eBay Sync</button>
+                    <button class="btn" onclick="publishAllToEbay()" id="publishBtn" style="background: #9c27b0; border-color: #9c27b0; color: white;">Publish New Listings</button>
                 </div>
 
                 <!-- Comparison Results -->
