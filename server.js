@@ -649,8 +649,11 @@ const ebayAPI = {
         <DispatchTimeMax>3</DispatchTimeMax>
         <ListingDuration>GTC</ListingDuration>
         <ListingType>FixedPriceItem</ListingType>
+        <Location>${item.Location || 'United States'}</Location>
+        <PostalCode>${item.PostalCode || '10001'}</PostalCode>
         <Quantity>${parseInt(item.Quantity) || 1}</Quantity>
         <SKU>${item.SKU}</SKU>
+        ${item.ImageUrl ? `<PictureDetails><PictureURL>${item.ImageUrl}</PictureURL></PictureDetails>` : ''}
         <ShippingDetails>
             <ShippingType>Flat</ShippingType>
             <ShippingServiceOptions>
@@ -3058,7 +3061,7 @@ app.post('/api/ebay/publish/:accountId/:sku', async (req, res) => {
         const result = await ebayAPI.addFixedPriceItem(req.params.accountId, {
             SKU: item.sku, Price: item.price || 9.99, Quantity: item.currentQty,
             Description: item.description, Condition: item.condition || 'NEW',
-            CategoryId: item.categoryId
+            CategoryId: item.categoryId, ImageUrl: item.imageUrl || null
         });
 
         // Save eBay item ID
@@ -3112,7 +3115,7 @@ app.post('/api/ebay/publish-all/:accountId', async (req, res) => {
                 const result = await ebayAPI.addFixedPriceItem(req.params.accountId, {
                     SKU: fullItem.sku, Price: fullItem.price || 9.99, Quantity: fullItem.currentQty,
                     Description: fullItem.description, Condition: fullItem.condition || 'NEW',
-                    CategoryId: fullItem.categoryId
+                    CategoryId: fullItem.categoryId, ImageUrl: fullItem.imageUrl || null
                 });
 
                 // Save the eBay item ID back to our database
