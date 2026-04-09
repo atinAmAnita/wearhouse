@@ -2970,8 +2970,9 @@ app.post('/api/ebay/publish/:accountId/:sku', async (req, res) => {
     try {
         const item = await data.getItem(req.params.sku);
         if (!item) return res.status(404).json({ error: 'Item not found' });
+        if (item.ebaySync?.ebayItemId) return res.status(400).json({ error: 'Item already has an eBay listing' });
 
-        // First sync the inventory item
+        // Create inventory item via Inventory API
         await ebayAPI.syncItemToEbay(req.params.accountId, {
             SKU: item.sku, Price: item.price || 0, Quantity: item.currentQty,
             Description: item.description, FullLocation: item.fullLocation,
@@ -2986,6 +2987,17 @@ app.post('/api/ebay/publish/:accountId/:sku', async (req, res) => {
             SKU: item.sku, Price: item.price || 9.99, Quantity: item.currentQty,
             Description: item.description, CategoryId: item.categoryId
         }, policies);
+
+        // Save eBay item ID
+        await data.updateItem(item.sku, {
+            ebaySync: {
+                ebayItemId: result.listingId || null,
+                ebayOfferId: result.offerId || null,
+                snapshot: ebayAPI.captureLocalSnapshot(item),
+                lastSyncTime: new Date(),
+                status: 'synced'
+            }
+        });
 
         await data.addHistory(req.params.sku, { date: new Date(), action: 'EBAY_PUBLISH', qty: 0, newTotal: item.currentQty, note: `Published to eBay (Listing: ${result.listingId})` });
         res.json({ message: 'Item published to eBay', result });
@@ -3007,7 +3019,7 @@ app.post('/api/ebay/publish-all/:accountId', async (req, res) => {
             return res.status(400).json({ error: err.message });
         }
 
-        const results = { published: [], failed: [] };
+        const results = { published: [], skipped: [], failed: [] };
         const items = await data.getAllItems();
 
         for (const item of items) {
@@ -3018,7 +3030,13 @@ app.post('/api/ebay/publish-all/:accountId', async (req, res) => {
                     continue;
                 }
 
-                // Sync inventory item first
+                // Skip items that already have an eBay listing
+                if (fullItem.ebaySync?.ebayItemId) {
+                    results.skipped.push({ sku: fullItem.sku, reason: 'Already on eBay' });
+                    continue;
+                }
+
+                // Create inventory item via Inventory API (only for new items, not legacy)
                 await ebayAPI.syncItemToEbay(req.params.accountId, {
                     SKU: fullItem.sku, Price: fullItem.price || 0, Quantity: fullItem.currentQty,
                     Description: fullItem.description, FullLocation: fullItem.fullLocation,
@@ -3030,6 +3048,17 @@ app.post('/api/ebay/publish-all/:accountId', async (req, res) => {
                     SKU: fullItem.sku, Price: fullItem.price || 9.99, Quantity: fullItem.currentQty,
                     Description: fullItem.description, CategoryId: fullItem.categoryId
                 }, policies);
+
+                // Save the eBay item ID back to our database
+                await data.updateItem(fullItem.sku, {
+                    ebaySync: {
+                        ebayItemId: result.listingId || null,
+                        ebayOfferId: result.offerId || null,
+                        snapshot: ebayAPI.captureLocalSnapshot(fullItem),
+                        lastSyncTime: new Date(),
+                        status: 'synced'
+                    }
+                });
 
                 results.published.push({ sku: fullItem.sku, listingId: result.listingId, existing: result.existing });
             } catch (err) {
