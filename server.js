@@ -618,6 +618,88 @@ const ebayAPI = {
         return { success: true, ack };
     },
 
+    // Create a new listing via Trading API (AddFixedPriceItem)
+    async addFixedPriceItem(accountId, item) {
+        let account = await this.ensureFreshToken(accountId);
+        const token = account.tokens.access_token;
+        const tradingEndpoint = config.ebay.environment === 'production'
+            ? 'https://api.ebay.com/ws/api.dll'
+            : 'https://api.sandbox.ebay.com/ws/api.dll';
+
+        const categoryId = item.CategoryId || '175673'; // Default: Other
+        const condition = item.Condition || 'NEW';
+        const conditionMap = { 'NEW': '1000', 'USED': '3000', 'USED_EXCELLENT': '3000', 'USED_GOOD': '4000', 'USED_ACCEPTABLE': '5000', 'FOR_PARTS': '7000' };
+        const conditionId = conditionMap[condition] || '1000';
+
+        const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
+<AddFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+    <RequesterCredentials>
+        <eBayAuthToken>${token}</eBayAuthToken>
+    </RequesterCredentials>
+    <Item>
+        <Title>${(item.Description || 'Item ' + item.SKU).replace(/&/g, '&amp;').replace(/</g, '&lt;').substring(0, 80)}</Title>
+        <Description>${(item.Description || '').replace(/&/g, '&amp;').replace(/</g, '&lt;')}</Description>
+        <PrimaryCategory>
+            <CategoryID>${categoryId}</CategoryID>
+        </PrimaryCategory>
+        <StartPrice currencyID="USD">${parseFloat(item.Price || 9.99).toFixed(2)}</StartPrice>
+        <ConditionID>${conditionId}</ConditionID>
+        <Country>US</Country>
+        <Currency>USD</Currency>
+        <DispatchTimeMax>3</DispatchTimeMax>
+        <ListingDuration>GTC</ListingDuration>
+        <ListingType>FixedPriceItem</ListingType>
+        <Quantity>${parseInt(item.Quantity) || 1}</Quantity>
+        <SKU>${item.SKU}</SKU>
+        <ShippingDetails>
+            <ShippingType>Flat</ShippingType>
+            <ShippingServiceOptions>
+                <ShippingServicePriority>1</ShippingServicePriority>
+                <ShippingService>USPSPriority</ShippingService>
+                <FreeShipping>true</FreeShipping>
+            </ShippingServiceOptions>
+        </ShippingDetails>
+        <ReturnPolicy>
+            <ReturnsAcceptedOption>ReturnsAccepted</ReturnsAcceptedOption>
+            <RefundOption>MoneyBack</RefundOption>
+            <ReturnsWithinOption>Days_30</ReturnsWithinOption>
+            <ShippingCostPaidByOption>Buyer</ShippingCostPaidByOption>
+        </ReturnPolicy>
+    </Item>
+    <ErrorLanguage>en_US</ErrorLanguage>
+    <WarningLevel>High</WarningLevel>
+</AddFixedPriceItemRequest>`;
+
+        const response = await fetch(tradingEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'text/xml',
+                'X-EBAY-API-SITEID': '0',
+                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+                'X-EBAY-API-CALL-NAME': 'AddFixedPriceItem',
+                'X-EBAY-API-IAF-TOKEN': token
+            },
+            body: xmlRequest
+        });
+
+        const xmlText = await response.text();
+        const ackMatch = xmlText.match(/<Ack>([^<]+)<\/Ack>/);
+        const ack = ackMatch ? ackMatch[1] : 'Unknown';
+
+        if (ack === 'Failure') {
+            const errorBlocks = [...xmlText.matchAll(/<Errors>([\s\S]*?)<\/Errors>/g)];
+            const realErrors = errorBlocks
+                .filter(m => m[1].includes('<SeverityCode>Error</SeverityCode>'))
+                .map(m => m[1].match(/<LongMessage>([^<]*)<\/LongMessage>/)?.[1] || m[1].match(/<ShortMessage>([^<]*)<\/ShortMessage>/)?.[1] || 'Unknown error');
+            if (realErrors.length > 0) {
+                throw new Error(realErrors.join('; '));
+            }
+        }
+
+        const itemIdMatch = xmlText.match(/<ItemID>([^<]+)<\/ItemID>/);
+        return { success: true, ack, itemId: itemIdMatch?.[1] || null };
+    },
+
     // Business Policies (needed for offers)
     async getFulfillmentPolicies(accountId, marketplaceId = 'EBAY_US') { return this.apiRequest(accountId, 'GET', `/sell/account/v1/fulfillment_policy?marketplace_id=${marketplaceId}`); },
     async getPaymentPolicies(accountId, marketplaceId = 'EBAY_US') { return this.apiRequest(accountId, 'GET', `/sell/account/v1/payment_policy?marketplace_id=${marketplaceId}`); },
@@ -2972,34 +3054,24 @@ app.post('/api/ebay/publish/:accountId/:sku', async (req, res) => {
         if (!item) return res.status(404).json({ error: 'Item not found' });
         if (item.ebaySync?.ebayItemId) return res.status(400).json({ error: 'Item already has an eBay listing' });
 
-        // Create inventory item via Inventory API
-        await ebayAPI.syncItemToEbay(req.params.accountId, {
-            SKU: item.sku, Price: item.price || 0, Quantity: item.currentQty,
-            Description: item.description, FullLocation: item.fullLocation,
-            Condition: item.condition || 'NEW', ItemSpecifics: item.itemSpecifics || {}
-        });
-
-        // Get business policies
-        const policies = await ebayAPI.getBusinessPolicies(req.params.accountId);
-
-        // Create and publish offer
-        const result = await ebayAPI.createAndPublishListing(req.params.accountId, {
+        // Create listing via Trading API (works for all items)
+        const result = await ebayAPI.addFixedPriceItem(req.params.accountId, {
             SKU: item.sku, Price: item.price || 9.99, Quantity: item.currentQty,
-            Description: item.description, CategoryId: item.categoryId
-        }, policies);
+            Description: item.description, Condition: item.condition || 'NEW',
+            CategoryId: item.categoryId
+        });
 
         // Save eBay item ID
         await data.updateItem(item.sku, {
             ebaySync: {
-                ebayItemId: result.listingId || null,
-                ebayOfferId: result.offerId || null,
+                ebayItemId: result.itemId || null,
                 snapshot: ebayAPI.captureLocalSnapshot(item),
                 lastSyncTime: new Date(),
                 status: 'synced'
             }
         });
 
-        await data.addHistory(req.params.sku, { date: new Date(), action: 'EBAY_PUBLISH', qty: 0, newTotal: item.currentQty, note: `Published to eBay (Listing: ${result.listingId})` });
+        await data.addHistory(req.params.sku, { date: new Date(), action: 'EBAY_PUBLISH', qty: 0, newTotal: item.currentQty, note: `Published to eBay (Listing: ${result.itemId})` });
         res.json({ message: 'Item published to eBay', result });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -3036,31 +3108,24 @@ app.post('/api/ebay/publish-all/:accountId', async (req, res) => {
                     continue;
                 }
 
-                // Create inventory item via Inventory API (only for new items, not legacy)
-                await ebayAPI.syncItemToEbay(req.params.accountId, {
-                    SKU: fullItem.sku, Price: fullItem.price || 0, Quantity: fullItem.currentQty,
-                    Description: fullItem.description, FullLocation: fullItem.fullLocation,
-                    Condition: fullItem.condition || 'NEW', ItemSpecifics: fullItem.itemSpecifics || {}
-                });
-
-                // Create and publish offer
-                const result = await ebayAPI.createAndPublishListing(req.params.accountId, {
+                // Create listing via Trading API
+                const result = await ebayAPI.addFixedPriceItem(req.params.accountId, {
                     SKU: fullItem.sku, Price: fullItem.price || 9.99, Quantity: fullItem.currentQty,
-                    Description: fullItem.description, CategoryId: fullItem.categoryId
-                }, policies);
+                    Description: fullItem.description, Condition: fullItem.condition || 'NEW',
+                    CategoryId: fullItem.categoryId
+                });
 
                 // Save the eBay item ID back to our database
                 await data.updateItem(fullItem.sku, {
                     ebaySync: {
-                        ebayItemId: result.listingId || null,
-                        ebayOfferId: result.offerId || null,
+                        ebayItemId: result.itemId || null,
                         snapshot: ebayAPI.captureLocalSnapshot(fullItem),
                         lastSyncTime: new Date(),
                         status: 'synced'
                     }
                 });
 
-                results.published.push({ sku: fullItem.sku, listingId: result.listingId, existing: result.existing });
+                results.published.push({ sku: fullItem.sku, listingId: result.itemId });
             } catch (err) {
                 results.failed.push({ sku: item.SKU, error: err.message });
             }
