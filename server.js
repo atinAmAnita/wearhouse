@@ -4,7 +4,10 @@ const path = require('path');
 const fs = require('fs');
 const XLSX = require('xlsx');
 const bwipjs = require('bwip-js');
+const multer = require('multer');
 const db = require('./database');
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -701,6 +704,64 @@ const ebayAPI = {
 
         const itemIdMatch = xmlText.match(/<ItemID>([^<]+)<\/ItemID>/);
         return { success: true, ack, itemId: itemIdMatch?.[1] || null };
+    },
+
+    // Upload image to eBay Picture Services (UploadSiteHostedPictures)
+    async uploadImage(accountId, imageBuffer, fileName) {
+        let account = await this.ensureFreshToken(accountId);
+        const token = account.tokens.access_token;
+        const tradingEndpoint = config.ebay.environment === 'production'
+            ? 'https://api.ebay.com/ws/api.dll'
+            : 'https://api.sandbox.ebay.com/ws/api.dll';
+
+        // eBay requires multipart/form-data with XML part + image part
+        const boundary = '----EbayImageUpload' + Date.now();
+        const xmlPart = `<?xml version="1.0" encoding="utf-8"?>
+<UploadSiteHostedPicturesRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+    <RequesterCredentials>
+        <eBayAuthToken>${token}</eBayAuthToken>
+    </RequesterCredentials>
+    <PictureName>${fileName || 'item-photo.jpg'}</PictureName>
+    <PictureSet>Supersize</PictureSet>
+    <ErrorLanguage>en_US</ErrorLanguage>
+    <WarningLevel>High</WarningLevel>
+</UploadSiteHostedPicturesRequest>`;
+
+        // Build multipart body
+        const parts = [];
+        parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="XML Payload"\r\nContent-Type: text/xml\r\n\r\n${xmlPart}\r\n`));
+        parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="${fileName || 'photo.jpg'}"\r\nContent-Type: image/jpeg\r\n\r\n`));
+        parts.push(imageBuffer);
+        parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+        const body = Buffer.concat(parts);
+
+        const response = await fetch(tradingEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                'Content-Length': body.length.toString(),
+                'X-EBAY-API-SITEID': '0',
+                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+                'X-EBAY-API-CALL-NAME': 'UploadSiteHostedPictures',
+                'X-EBAY-API-IAF-TOKEN': token
+            },
+            body
+        });
+
+        const xmlText = await response.text();
+        const ackMatch = xmlText.match(/<Ack>([^<]+)<\/Ack>/);
+        const ack = ackMatch ? ackMatch[1] : 'Unknown';
+
+        if (ack === 'Failure') {
+            const errorMsg = xmlText.match(/<LongMessage>([^<]*)<\/LongMessage>/)?.[1] ||
+                             xmlText.match(/<ShortMessage>([^<]*)<\/ShortMessage>/)?.[1] || 'Upload failed';
+            throw new Error(errorMsg);
+        }
+
+        const urlMatch = xmlText.match(/<FullURL>([^<]+)<\/FullURL>/);
+        if (!urlMatch) throw new Error('No image URL returned from eBay');
+
+        return { imageUrl: urlMatch[1], ack };
     },
 
     // Business Policies (needed for offers)
@@ -2722,6 +2783,29 @@ app.get('/api/ebay/compare/:accountId', async (req, res) => {
 
     } catch (err) {
         console.error('Compare error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Upload image to eBay and return hosted URL
+app.post('/api/ebay/upload-image/:accountId', upload.single('image'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No image file provided' });
+        const result = await ebayAPI.uploadImage(req.params.accountId, req.file.buffer, req.file.originalname);
+        res.json({ imageUrl: result.imageUrl });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Save image URL to an item
+app.put('/api/inventory/:sku/image', async (req, res) => {
+    try {
+        const { imageUrl } = req.body;
+        if (!imageUrl) return res.status(400).json({ error: 'Missing imageUrl' });
+        await data.updateItem(req.params.sku, { imageUrl });
+        res.json({ message: 'Image updated', imageUrl });
+    } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });

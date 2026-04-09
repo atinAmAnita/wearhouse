@@ -377,10 +377,18 @@ const Lookup = {
             const lookupDetailsEl = resultPanel.querySelector('.item-details');
             if (lookupDetailsEl) {
                 const imageHtml = data.item.ImageUrl
-                    ? `<div class="item-image"><img src="${data.item.ImageUrl}" alt="${data.item.SKU}" onerror="this.parentElement.style.display='none'"></div>`
-                    : '';
+                    ? `<div class="item-image">
+                        <img src="${data.item.ImageUrl}" alt="${data.item.SKU}" onerror="this.parentElement.querySelector('img').style.display='none'">
+                        <button class="btn btn-sm" onclick="Lookup.uploadPhoto()" style="margin-top:5px;font-size:0.8rem;">Change Photo</button>
+                       </div>`
+                    : `<div class="item-image">
+                        <div style="width:200px;height:120px;background:var(--bg-input);border:2px dashed var(--border-color);border-radius:8px;display:flex;align-items:center;justify-content:center;margin:0 auto;cursor:pointer;" onclick="Lookup.uploadPhoto()">
+                            <span style="color:var(--text-muted);font-size:0.9rem;">+ Add Photo</span>
+                        </div>
+                       </div>`;
                 lookupDetailsEl.innerHTML = `
                     ${imageHtml}
+                    <input type="file" id="photoUploadInput" accept="image/*" style="display:none" onchange="Lookup.handlePhotoUpload(event)">
                     <p><strong>SKU:</strong> ${data.item.SKU}</p>
                     <p><strong>Location:</strong> Drawer ${data.item.DrawerNumber}, Position ${data.item.PositionNumber}</p>
                     <p class="item-price"><strong>Price:</strong> $${parseFloat(data.item.Price || 0).toFixed(2)}</p>
@@ -425,6 +433,46 @@ const Lookup = {
         } catch (err) {
             UI.hide(UI.el('lookupResult'));
             UI.notify(err.message, 'error');
+        }
+    },
+
+    uploadPhoto() {
+        if (!State.currentItem) return;
+        UI.el('photoUploadInput')?.click();
+    },
+
+    async handlePhotoUpload(event) {
+        const file = event.target.files[0];
+        if (!file || !State.currentItem) return;
+
+        const accountId = eBay.getSelectedAccount();
+        if (!accountId) {
+            UI.notify('Select an eBay account first (eBay Sync tab)', 'error');
+            return;
+        }
+
+        UI.notify('Uploading photo to eBay...', 'info');
+
+        try {
+            const formData = new FormData();
+            formData.append('image', file);
+            const response = await fetch(`/api/ebay/upload-image/${accountId}`, { method: 'POST', body: formData });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error);
+
+            // Save the eBay-hosted URL to the item
+            await fetch(`/api/inventory/${State.currentItem.SKU}/image`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ imageUrl: result.imageUrl })
+            });
+
+            State.currentItem.ImageUrl = result.imageUrl;
+            UI.notify('Photo uploaded!', 'success');
+            // Refresh the item view
+            this.search(State.currentItem.SKU);
+        } catch (err) {
+            UI.notify('Upload failed: ' + err.message, 'error');
         }
     },
 
