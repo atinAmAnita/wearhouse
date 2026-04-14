@@ -1822,6 +1822,7 @@ const ebayAPI = {
             exported: [],      // Created on eBay from local
             updated: [],       // Updated (either direction)
             sales: [],         // eBay sales detected
+            skipped: [],       // Skipped (already exists, or safety guard)
             errors: []
         };
 
@@ -2774,7 +2775,9 @@ app.post('/api/cron/sync-all-accounts', ah(async (req, res) => {
                 exported: syncResult.exported.length,
                 updated: syncResult.updated.length,
                 sales: syncResult.sales.length,
-                errors: syncResult.errors.length
+                skipped: (syncResult.skipped || []).length,
+                errors: syncResult.errors.length,
+                errorSamples: (syncResult.errors || []).slice(0, 3).map(e => ({ sku: e.sku, error: (e.error || '').slice(0, 200) }))
             });
         } catch (err) {
             // 409 (manual sync in progress) is expected and not an error
