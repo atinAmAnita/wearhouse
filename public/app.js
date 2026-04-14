@@ -28,8 +28,13 @@ const API = {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Request failed');
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            const err = new Error(data.error || 'Request failed');
+            err.status = response.status;
+            err.details = data.details;
+            throw err;
+        }
         return data;
     },
 
@@ -119,6 +124,33 @@ const UI = {
     // Set element content
     setHTML: (id, html) => { const el = UI.el(id); if (el) el.innerHTML = html; },
     setText: (id, text) => { const el = UI.el(id); if (el) el.textContent = text; },
+
+    // Wrap an async operation behind a button: disable during run, enforce min 2s cooldown,
+    // handle 409 "sync in progress" gracefully. Returns the handler's result (or rethrows).
+    async withButtonLock(btn, fn, opts = {}) {
+        if (!btn) return fn();
+        if (btn.disabled) return; // prevent double-clicks
+        const cooldownMs = opts.cooldownMs ?? 2000;
+        const originalHTML = btn.innerHTML;
+        btn.disabled = true;
+        const start = Date.now();
+        try {
+            return await fn();
+        } catch (err) {
+            // 409 Sync in progress — friendly message, keep cooldown
+            if (err?.message?.includes('Sync already in progress') || err?.status === 409) {
+                UI.notify(err.message || 'Sync already in progress, please wait', 'warning');
+            } else {
+                throw err;
+            }
+        } finally {
+            const elapsed = Date.now() - start;
+            setTimeout(() => {
+                btn.disabled = false;
+                if (opts.restoreHTML !== false) btn.innerHTML = originalHTML;
+            }, Math.max(0, cooldownMs - elapsed));
+        }
+    },
 
     // Modal management
     modal: {
@@ -683,17 +715,34 @@ const Inventory = {
             totalQty += parseInt(item.Quantity) || 0;
         });
 
+        // Build pending-SKU set once per render (Point 13 sync status column)
+        const pendingSkus = new Set((Updates.allUpdates || []).map(u => u.sku));
+
         pageItems.forEach(item => {
             const row = document.createElement('tr');
             const thumb = item.ImageUrl
                 ? `<img src="${item.ImageUrl}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:4px;" onerror="this.style.display='none'">`
                 : '<span style="display:inline-block;width:36px;height:36px;background:var(--bg-input);border-radius:4px;"></span>';
+
+            // Sync status icon
+            let syncIcon, syncTitle;
+            if (pendingSkus.has(item.SKU)) { syncIcon = '⏳'; syncTitle = 'Pending update'; }
+            else if (item.EbayStatus === 'error') { syncIcon = '⚠️'; syncTitle = 'Sync error'; }
+            else if (item.EbayItemId) { syncIcon = '✓'; syncTitle = 'Synced to eBay'; }
+            else { syncIcon = '○'; syncTitle = 'Not on eBay'; }
+
+            // Low stock row highlight (Point 14)
+            const threshold = item.LowStockThreshold ?? 2;
+            const isLowStock = parseInt(item.Quantity) <= threshold && item.EbayItemId;
+            const rowStyle = isLowStock ? 'style="background:rgba(249, 168, 37, 0.08);"' : '';
+
             row.innerHTML = `
-                <td style="width:40px;padding:4px;">${thumb}</td>
+                <td style="width:40px;padding:4px;" ${rowStyle}>${thumb}</td>
+                <td style="text-align:center;" title="${syncTitle}">${syncIcon}</td>
                 <td>${item.SKU}</td>
                 <td>${item.FullLocation}</td>
                 <td>$${parseFloat(item.Price || 0).toFixed(2)}</td>
-                <td>${item.Quantity}</td>
+                <td>${item.Quantity}${isLowStock ? ' <span style="color:#f9a825;font-size:0.8rem;">⚠ low</span>' : ''}</td>
                 <td>${item.Description || '-'}</td>
                 <td>${UI.formatDate(item.DateAdded)}</td>
                 <td class="action-cell">
@@ -702,12 +751,19 @@ const Inventory = {
                     ${UI.actionBtn('Delete', `Inventory.delete('${item.SKU}')`, 'danger')}
                 </td>
             `;
+            if (isLowStock) row.style.background = 'rgba(249, 168, 37, 0.08)';
             tbody.appendChild(row);
         });
 
         // Update stats
         UI.setText('totalItems', `${this.allItems.length} items`);
         UI.setText('totalQuantity', `${totalQty} total qty`);
+        // Low-stock count (Point 14)
+        const lowStockCount = this.allItems.filter(i => {
+            const t = i.LowStockThreshold ?? 2;
+            return parseInt(i.Quantity) <= t && i.EbayItemId;
+        }).length;
+        UI.setText('lowStockCount', lowStockCount > 0 ? `${lowStockCount} low stock` : '');
 
         // Update pagination
         UI.setText('pageInfo', `Page ${this.currentPage} of ${totalPages}`);
@@ -1323,7 +1379,7 @@ const eBay = {
         UI.setHTML('syncDetails', detailsHtml);
     },
 
-    // Pull from eBay to local
+    // Pull from eBay — HARD OVERWRITE of local database with eBay values (Point 17)
     async pull() {
         const accountId = eBay.getSelectedAccount();
         if (!accountId) {
@@ -1332,12 +1388,30 @@ const eBay = {
         }
 
         const account = State.ebayAccounts.find(a => a.id === accountId);
-        if (!UI.confirm(`Pull listings from "${account?.name}" to local inventory?`)) return;
 
-        UI.notify('Pulling from eBay...', 'info');
+        // Safety: if there are pending updates, warn loudly
+        let pendingCount = 0;
+        try {
+            const updatesData = await API.get('/api/updates');
+            pendingCount = (updatesData.updates || []).length;
+        } catch (_) { /* ignore */ }
+
+        let msg = `DANGER: Pull from "${account?.name}" will OVERWRITE your local database with eBay values.\n\n`;
+        if (pendingCount > 0) {
+            msg += `⚠ You have ${pendingCount} pending updates that will be DISCARDED.\n\n`;
+            msg += `Consider using "Compare with eBay" instead to review changes safely.\n\n`;
+        }
+        msg += `Type YES to confirm (case-sensitive):`;
+        const typed = prompt(msg);
+        if (typed !== 'YES') {
+            UI.notify('Pull cancelled', 'info');
+            return;
+        }
+
+        UI.notify('Pulling from eBay (overwriting local)...', 'info');
         const btn = UI.el('pullBtn');
         if (btn) { btn.disabled = true; btn.textContent = 'Pulling...'; }
-
+        const startTime = Date.now();
         try {
             const data = await API.ebay.pull(accountId);
             eBay.showSyncResults(data, 'Pull from eBay');
@@ -1345,13 +1419,15 @@ const eBay = {
             eBay.loadStatus();
             Inventory.load();
         } catch (err) {
-            UI.notify(err.message, 'error');
+            UI.notify(err.message, err.message?.includes('Sync already in progress') ? 'warning' : 'error');
         } finally {
-            if (btn) { btn.disabled = false; btn.innerHTML = '<span style="font-size: 1.2em;">&#8595;</span> Pull from eBay'; }
+            setTimeout(() => {
+                if (btn) { btn.disabled = false; btn.textContent = 'Pull from eBay (Overwrite)'; }
+            }, Math.max(0, 2000 - (Date.now() - startTime)));
         }
     },
 
-    // Push local to eBay
+    // Push Pending Updates — shortcut for Updates → Apply All (Point 17)
     async push() {
         const accountId = eBay.getSelectedAccount();
         if (!accountId) {
@@ -1359,23 +1435,20 @@ const eBay = {
             return;
         }
 
-        const account = State.ebayAccounts.find(a => a.id === accountId);
-        if (!UI.confirm(`Push local inventory to "${account?.name}" on eBay?`)) return;
-
-        UI.notify('Pushing to eBay...', 'info');
-        const btn = UI.el('pushBtn');
-        if (btn) { btn.disabled = true; btn.textContent = 'Pushing...'; }
-
+        // Load fresh pending updates list
         try {
-            const data = await API.ebay.push(accountId);
-            eBay.showSyncResults(data, 'Push to eBay');
-            UI.notify(data.message, data.summary?.errors > 0 ? 'info' : 'success');
-            eBay.loadStatus();
-            eBay.loadInventory();
+            const updatesData = await API.get('/api/updates');
+            const pending = updatesData.updates || [];
+            if (pending.length === 0) {
+                UI.notify('No pending updates to push. Use "Compare with eBay" to detect changes or edit items locally first.', 'info');
+                return;
+            }
+            if (!Updates.allUpdates || Updates.allUpdates.length !== pending.length) {
+                await Updates.load();
+            }
+            return Updates.applyAll();
         } catch (err) {
             UI.notify(err.message, 'error');
-        } finally {
-            if (btn) { btn.disabled = false; btn.innerHTML = '<span style="font-size: 1.2em;">&#8593;</span> Push to eBay'; }
         }
     },
 
@@ -1393,7 +1466,7 @@ const eBay = {
         UI.notify('Running smart sync...', 'info');
         const btn = UI.el('syncBtn');
         if (btn) { btn.disabled = true; btn.textContent = 'Syncing...'; }
-
+        const startTime = Date.now();
         try {
             const data = await API.ebay.syncAll(accountId);
             eBay.showSyncResults(data, 'Smart Sync');
@@ -1402,9 +1475,11 @@ const eBay = {
             eBay.loadInventory();
             Inventory.load();
         } catch (err) {
-            UI.notify(err.message, 'error');
+            UI.notify(err.message, err.message?.includes('Sync already in progress') ? 'warning' : 'error');
         } finally {
-            if (btn) { btn.disabled = false; btn.innerHTML = '<span style="font-size: 1.2em;">&#8596;</span> Smart Sync'; }
+            setTimeout(() => {
+                if (btn) { btn.disabled = false; btn.innerHTML = '<span style="font-size: 1.2em;">&#8596;</span> Smart Sync'; }
+            }, Math.max(0, 2000 - (Date.now() - startTime)));
         }
     },
 
@@ -1424,7 +1499,9 @@ const eBay = {
         if (!UI.confirm(`Publish all items as eBay listings to "${account?.name}"?\n\nThis will create actual visible listings on eBay.`)) return;
 
         UI.notify('Publishing listings to eBay...', 'info');
-
+        const btn = UI.el('publishBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Publishing...'; }
+        const startTime = Date.now();
         try {
             const data = await API.ebay.publishAll(accountId);
 
@@ -1456,7 +1533,11 @@ const eBay = {
             eBay.loadInventory();
 
         } catch (err) {
-            UI.notify(err.message, 'error');
+            UI.notify(err.message, err.message?.includes('Sync already in progress') ? 'warning' : 'error');
+        } finally {
+            setTimeout(() => {
+                if (btn) { btn.disabled = false; btn.textContent = 'Publish New Listings'; }
+            }, Math.max(0, 2000 - (Date.now() - startTime)));
         }
     },
 
@@ -1517,7 +1598,7 @@ const eBay = {
         UI.notify('Comparing with eBay...', 'info');
         const btn = UI.el('compareBtn');
         if (btn) { btn.disabled = true; btn.textContent = 'Comparing...'; }
-
+        const startTime = Date.now();
         try {
             const result = await API.post(`/api/ebay/compare-and-queue/${accountId}`, { skipSkus, forceSkus });
 
@@ -1561,9 +1642,11 @@ const eBay = {
             }
 
         } catch (err) {
-            UI.notify(err.message, 'error');
+            UI.notify(err.message, err.message?.includes('Sync already in progress') ? 'warning' : 'error');
         } finally {
-            if (btn) { btn.disabled = false; btn.textContent = 'Compare with eBay'; }
+            setTimeout(() => {
+                if (btn) { btn.disabled = false; btn.textContent = 'Compare with eBay'; }
+            }, Math.max(0, 2000 - (Date.now() - startTime)));
         }
     },
 
@@ -1820,10 +1903,18 @@ const Updates = {
             }).join(' ');
 
             const time = update.createdAt ? new Date(update.createdAt).toLocaleString() : '';
+            // Point 15: age indicator
+            let ageBadge = '';
+            if (update.createdAt) {
+                const ageDays = (Date.now() - new Date(update.createdAt).getTime()) / (1000 * 60 * 60 * 24);
+                if (ageDays >= 30) ageBadge = `<div style="color:#e53935;font-size:0.75rem;margin-top:2px;">⚠ ${Math.round(ageDays)} days old — eBay state likely drifted</div>`;
+                else if (ageDays >= 7) ageBadge = `<div style="color:#f9a825;font-size:0.75rem;margin-top:2px;">⏱ ${Math.round(ageDays)} days old</div>`;
+                else if (ageDays >= 1) ageBadge = `<div style="color:var(--text-muted);font-size:0.75rem;margin-top:2px;">${Math.round(ageDays)} days ago</div>`;
+            }
             const id = update._id;
 
             return `<tr>
-                <td style="white-space: nowrap; font-size: 0.85rem;">${time}</td>
+                <td style="white-space: nowrap; font-size: 0.85rem;">${time}${ageBadge}</td>
                 <td><strong>${update.sku}</strong></td>
                 <td><span class="type-badge" style="background: ${tc.bg}; color: ${tc.color};">${update.updateType}</span></td>
                 <td>${changesHtml}</td>
@@ -1854,43 +1945,80 @@ const Updates = {
         }
     },
 
-    async apply(id) {
+    async apply(id, opts = {}) {
+        const accountId = eBay.getSelectedAccount();
+        if (!accountId) {
+            UI.notify('Please select an eBay account first (eBay Sync tab)', 'error');
+            return;
+        }
         try {
-            const accountId = eBay.getSelectedAccount();
-            if (!accountId) {
-                UI.notify('Please select an eBay account first (eBay Sync tab)', 'error');
-                return;
-            }
-            const result = await API.updates.apply(id, accountId);
-
-            if (result.ebayFailed && result.undoData) {
-                // eBay sync failed — ask user if they want to undo
-                const undo = confirm(`${result.message}\n\nLocal inventory was updated but eBay was NOT.\nUndo the local change?`);
-                if (undo) {
-                    try {
-                        await API.updates.undo(result.undoData);
-                        await this.load();
-                        Inventory.load();
-                        UI.notify('Change reverted — back in Updates queue', 'info');
-                        return;
-                    } catch (undoErr) {
-                        UI.notify('Undo failed: ' + undoErr.message, 'error');
-                    }
-                } else {
-                    // User chose to keep local change without eBay sync
-                    UI.notify('Local update kept — eBay not synced', 'info');
-                }
-            } else {
-                UI.notify(result.message || 'Update applied', 'success');
-            }
-
+            const result = await API.post(`/api/updates/${id}/apply`, { accountId, force: opts.force === true });
+            UI.notify(result.message || 'Update applied', 'success');
             this.allUpdates = this.allUpdates.filter(u => u._id !== id);
             this.render();
             this.refreshBadge();
             Inventory.load();
+            return { applied: true };
         } catch (err) {
+            // 409 — either lock contention OR eBay drift
+            if (err.status === 409) {
+                // Drift response has details.drifted
+                if (err.details?.drifted) {
+                    const driftLines = err.details.drifted.map(d => `  ${d.field}: expected ${d.expected}, eBay has ${d.actual}`).join('\n');
+                    const choice = confirm(`eBay has changed since this update was queued:\n\n${driftLines}\n\nOK = Overwrite eBay with your queued values\nCancel = Keep the update pending (re-review)`);
+                    if (choice) {
+                        return this.apply(id, { force: true });
+                    }
+                    UI.notify('Update kept pending', 'info');
+                    return { applied: false, skipped: true };
+                }
+                // Otherwise lock contention
+                UI.notify(err.message, 'warning');
+                return { applied: false, skipped: true };
+            }
+            // Actual error (500, 400 etc.)
             UI.notify(err.message, 'error');
+            return { applied: false, error: err.message };
         }
+    },
+
+    async applyAll() {
+        const accountId = eBay.getSelectedAccount();
+        if (!accountId) {
+            UI.notify('Please select an eBay account first (eBay Sync tab)', 'error');
+            return;
+        }
+        if (!this.allUpdates?.length) {
+            UI.notify('No pending updates to apply', 'info');
+            return;
+        }
+        const total = this.allUpdates.length;
+        if (!UI.confirm(`Apply all ${total} pending updates?\n\nEach will push to eBay. Conflicts stay in queue.`)) return;
+
+        const btn = UI.el('applyAllBtn');
+        if (btn) { btn.disabled = true; btn.textContent = `Applying 0/${total}...`; }
+
+        const snapshot = [...this.allUpdates]; // freeze list — apply() mutates allUpdates
+        let applied = 0, skipped = 0, failed = 0;
+        for (let i = 0; i < snapshot.length; i++) {
+            const u = snapshot[i];
+            if (btn) btn.textContent = `Applying ${i + 1}/${total}...`;
+            try {
+                const result = await this.apply(u._id);
+                if (result?.applied) applied++;
+                else if (result?.skipped) skipped++;
+                else if (result?.error) failed++;
+            } catch (err) {
+                failed++;
+            }
+        }
+
+        if (btn) { btn.disabled = false; btn.textContent = 'Apply All'; }
+        const parts = [];
+        if (applied) parts.push(`${applied} applied`);
+        if (skipped) parts.push(`${skipped} skipped (conflicts or in-progress)`);
+        if (failed) parts.push(`${failed} failed`);
+        UI.notify(`Done: ${parts.join(', ') || 'nothing to apply'}`, failed ? 'info' : 'success');
     },
 
     async dismissAll() {

@@ -148,6 +148,7 @@
                 <div class="inventory-stats">
                     <span id="totalItems" class="stat-badge">0 items</span>
                     <span id="totalQuantity" class="stat-badge">0 total qty</span>
+                    <span id="lowStockCount" class="stat-badge" style="background:#f9a825;color:#000;"></span>
                 </div>
             </div>
             <div class="inventory-controls">
@@ -164,6 +165,7 @@
                     <thead>
                         <tr>
                             <th style="width: 40px;"></th>
+                            <th style="width: 40px;" title="eBay sync status">Sync</th>
                             <th class="sortable" onclick="Inventory.sortBy('sku')">SKU</th>
                             <th class="sortable" onclick="Inventory.sortBy('location')">Location</th>
                             <th class="sortable" onclick="Inventory.sortBy('price')">Price</th>
@@ -203,6 +205,7 @@
             <p style="color: var(--text-muted); margin-bottom: 20px;">Changes made to your inventory that haven't been synced to eBay yet.</p>
             <div class="inventory-controls" style="margin-bottom: 20px;">
                 <button class="btn btn-secondary" onclick="Updates.load()">Refresh</button>
+                <button class="btn btn-success" id="applyAllBtn" onclick="Updates.applyAll()" style="background:#2e7d32;color:#fff;">Apply All</button>
                 <button class="btn btn-danger" onclick="Updates.dismissAll()">Dismiss All</button>
             </div>
             <div id="updatesEmpty" class="updates-empty hidden">
@@ -266,11 +269,11 @@
                 </div>
 
                 <div class="sync-actions">
-                    <button class="btn btn-secondary" onclick="eBay.pull()" id="pullBtn">Pull from eBay</button>
-                    <button class="btn btn-warning" onclick="eBay.compare()" id="compareBtn" style="background: #ff9800; border-color: #ff9800;">Compare with eBay</button>
-                    <button class="btn btn-success" onclick="eBay.push()" id="pushBtn" style="background: #2e7d32; border-color: #2e7d32;">Push to eBay</button>
-                    <button class="btn btn-primary" onclick="eBay.sync()" id="syncBtn" style="background: #1565c0; border-color: #1565c0;">eBay Sync</button>
-                    <button class="btn" onclick="publishAllToEbay()" id="publishBtn" style="background: #9c27b0; border-color: #9c27b0; color: white;">Publish New Listings</button>
+                    <button class="btn" onclick="eBay.pull()" id="pullBtn" style="background:#c62828; border-color:#c62828; color:#fff;" title="Danger: overwrites local database with eBay values. Confirmation required.">Pull from eBay (Overwrite)</button>
+                    <button class="btn btn-primary" onclick="eBay.compare()" id="compareBtn" style="background:#1565c0; border-color:#1565c0; color:#fff;" title="Fetch eBay state and queue differences in Updates tab for review. Safest option.">Compare with eBay</button>
+                    <button class="btn btn-success" onclick="eBay.push()" id="pushBtn" style="background:#2e7d32; border-color:#2e7d32; color:#fff;" title="Apply all pending updates in the Updates tab to eBay.">Push Pending Updates</button>
+                    <button class="btn" onclick="eBay.sync()" id="syncBtn" style="background:#0288d1; border-color:#0288d1; color:#fff;" title="Smart two-way: auto-applies sales, queues everything else for review.">eBay Sync</button>
+                    <button class="btn" onclick="publishAllToEbay()" id="publishBtn" style="background: #9c27b0; border-color: #9c27b0; color: white;" title="Create new eBay listings from inventory items not yet on eBay.">Publish New Listings</button>
                 </div>
 
                 <!-- Comparison Results -->

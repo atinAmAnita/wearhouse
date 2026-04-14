@@ -6,27 +6,13 @@ const XLSX = require('xlsx');
 const bwipjs = require('bwip-js');
 const multer = require('multer');
 const db = require('./database');
+const { HttpError, ah, errorMiddleware } = require('./lib/errors');
+const { ebayLocks, withEbayLock } = require('./lib/ebayLocks');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// ============================================
-// ERROR HANDLING INFRASTRUCTURE
-// ============================================
-// HttpError: throw this from any route to return a specific status code + message
-class HttpError extends Error {
-    constructor(status, message, details) {
-        super(message);
-        this.status = status;
-        this.details = details;
-    }
-}
-
-// ah(): wrap async route handlers so thrown errors reach the global error middleware
-// Use: app.get('/path', ah(async (req, res) => { ... }))
-const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 // ============================================
 // DATABASE MODE CONFIGURATION
@@ -311,7 +297,10 @@ function formatItem(item) {
         ImageUrl: item.imageUrl || null,
         DateAdded: item.dateAdded,
         LastModified: item.lastModified,
-        Staged: item.staged || false
+        Staged: item.staged || false,
+        EbayItemId: item.ebaySync?.ebayItemId || null,
+        EbayStatus: item.ebaySync?.status || 'not_synced',
+        LowStockThreshold: item.lowStockThreshold ?? null
     };
 }
 
@@ -376,6 +365,130 @@ const ebayAPI = {
     },
 
     // Ensure account has a fresh access token, refreshing if needed. Returns the account.
+    // ========================================
+    // TRADING API HELPERS (Point 8)
+    // Reusable primitives for all Trading API XML calls.
+    // ========================================
+
+    // Escape user input for safe XML embedding
+    escapeXml(s) {
+        return String(s ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&apos;');
+    },
+
+    // Parse eBay XML response: separate real errors (SeverityCode=Error) from warnings.
+    // Returns { ack, errors: [LongMessage strings], warnings: [LongMessage strings] }
+    parseEbayResponse(xmlText) {
+        const ack = xmlText.match(/<Ack>([^<]+)<\/Ack>/)?.[1] || 'Unknown';
+        const errorBlocks = [...xmlText.matchAll(/<Errors>([\s\S]*?)<\/Errors>/g)];
+        const errors = [];
+        const warnings = [];
+        for (const m of errorBlocks) {
+            const block = m[1];
+            const msg = block.match(/<LongMessage>([^<]*)<\/LongMessage>/)?.[1]
+                     || block.match(/<ShortMessage>([^<]*)<\/ShortMessage>/)?.[1]
+                     || 'Unknown';
+            if (block.includes('<SeverityCode>Error</SeverityCode>')) errors.push(msg);
+            else warnings.push(msg);
+        }
+        return { ack, errors, warnings };
+    },
+
+    // Generic Trading API call. innerXml is the content between <RequesterCredentials> and footer.
+    // Throws on real errors (warnings are returned but don't throw).
+    async tradingApiCall(accountId, callName, innerXml) {
+        const account = await this.ensureFreshToken(accountId);
+        const token = account.tokens.access_token;
+        const endpoint = config.ebay.environment === 'production'
+            ? 'https://api.ebay.com/ws/api.dll'
+            : 'https://api.sandbox.ebay.com/ws/api.dll';
+        const body = `<?xml version="1.0" encoding="utf-8"?>
+<${callName}Request xmlns="urn:ebay:apis:eBLBaseComponents">
+    <RequesterCredentials><eBayAuthToken>${token}</eBayAuthToken></RequesterCredentials>
+    ${innerXml}
+    <ErrorLanguage>en_US</ErrorLanguage>
+    <WarningLevel>High</WarningLevel>
+</${callName}Request>`;
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'text/xml',
+                'X-EBAY-API-SITEID': '0',
+                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+                'X-EBAY-API-CALL-NAME': callName,
+                'X-EBAY-API-IAF-TOKEN': token
+            },
+            body
+        });
+        const xmlText = await response.text();
+        const parsed = this.parseEbayResponse(xmlText);
+        if (parsed.ack === 'Failure' && parsed.errors.length > 0) {
+            throw new Error(parsed.errors.join('; '));
+        }
+        return { xmlText, ...parsed };
+    },
+
+    // ========================================
+    // DRIFT DETECTION (Point 1)
+    // Fetch current eBay state for a listing, cached 30s to avoid hammering on bulk apply.
+    // ========================================
+    _listingStateCache: new Map(), // key: `${accountId}:${ebayItemId}`, value: { state, at }
+
+    async getCurrentListingState(accountId, ebayItemId) {
+        const key = `${accountId}:${ebayItemId}`;
+        const cached = this._listingStateCache.get(key);
+        if (cached && Date.now() - cached.at < 30 * 1000) return cached.state;
+
+        const account = await this.ensureFreshToken(accountId);
+        const token = account.tokens.access_token;
+        const endpoint = config.ebay.environment === 'production'
+            ? 'https://api.ebay.com/ws/api.dll'
+            : 'https://api.sandbox.ebay.com/ws/api.dll';
+        const body = `<?xml version="1.0" encoding="utf-8"?>
+<GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+    <RequesterCredentials><eBayAuthToken>${token}</eBayAuthToken></RequesterCredentials>
+    <ItemID>${ebayItemId}</ItemID>
+    <DetailLevel>ReturnAll</DetailLevel>
+    <ErrorLanguage>en_US</ErrorLanguage>
+    <WarningLevel>High</WarningLevel>
+</GetItemRequest>`;
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'text/xml',
+                'X-EBAY-API-SITEID': '0',
+                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+                'X-EBAY-API-CALL-NAME': 'GetItem',
+                'X-EBAY-API-IAF-TOKEN': token
+            },
+            body
+        });
+        const xmlText = await response.text();
+        const ack = xmlText.match(/<Ack>([^<]+)<\/Ack>/)?.[1];
+        if (ack === 'Failure') {
+            const errBlocks = [...xmlText.matchAll(/<Errors>([\s\S]*?)<\/Errors>/g)];
+            const realErr = errBlocks.find(m => m[1].includes('<SeverityCode>Error</SeverityCode>'));
+            if (realErr) {
+                const msg = realErr[1].match(/<LongMessage>([^<]*)/)?.[1] || realErr[1].match(/<ShortMessage>([^<]*)/)?.[1];
+                throw new Error(`GetItem failed: ${msg}`);
+            }
+        }
+        // Find the <Item> block and parse qty/price
+        const itemMatch = xmlText.match(/<Item>([\s\S]*?)<\/Item>/);
+        if (!itemMatch) throw new Error('GetItem: no Item in response');
+        const itemXml = itemMatch[1];
+        const price = parseFloat(itemXml.match(/<StartPrice[^>]*>([^<]*)<\/StartPrice>/)?.[1] || itemXml.match(/<BuyItNowPrice[^>]*>([^<]*)<\/BuyItNowPrice>/)?.[1] || '0');
+        const quantity = parseInt(itemXml.match(/<Quantity>([^<]*)<\/Quantity>/)?.[1] || '0');
+        const title = itemXml.match(/<Title>([^<]*)<\/Title>/)?.[1] || '';
+        const state = { price, quantity, title };
+        this._listingStateCache.set(key, { state, at: Date.now() });
+        return state;
+    },
+
     async ensureFreshToken(accountId) {
         let account = await data.getAccount(accountId);
         if (!account) throw new Error('Account not found');
@@ -673,6 +786,7 @@ const ebayAPI = {
         <Quantity>${parseInt(item.Quantity) || 1}</Quantity>
         <SKU>${item.SKU}</SKU>
         ${item.ImageUrl ? `<PictureDetails><PictureURL>${item.ImageUrl}</PictureURL></PictureDetails>` : ''}
+        ${item.ItemSpecifics && Object.keys(item.ItemSpecifics).length > 0 ? `<ItemSpecifics>${Object.entries(item.ItemSpecifics).filter(([k,v]) => k && v).map(([k,v]) => `<NameValueList><Name>${this.escapeXml(k)}</Name><Value>${this.escapeXml(v)}</Value></NameValueList>`).join('')}</ItemSpecifics>` : ''}
         <ShippingDetails>
             <ShippingType>Flat</ShippingType>
             <ShippingServiceOptions>
@@ -1319,26 +1433,34 @@ const ebayAPI = {
         };
     },
 
-    // Detect changes between current eBay state and stored snapshot
-    detectEbayChanges(currentEbay, snapshot) {
+    // Detect changes between two states. Returns array of { field, oldValue, newValue }.
+    // before/after: { price, quantity, title? }. Either can be null for "no baseline" scenarios.
+    // opts: { priceEpsilon = 0.01, includeTitle = false }
+    detectChanges(before, after, opts = {}) {
+        if (!before) return [{ field: 'all', oldValue: null, newValue: after, reason: 'no_baseline' }];
+        if (!after) return [{ field: 'all', oldValue: before, newValue: null, reason: 'no_current' }];
+        const priceEps = opts.priceEpsilon ?? 0.01;
         const changes = [];
-        if (!snapshot) return [{ field: 'all', reason: 'no_snapshot' }];
-
-        const currentQty = parseInt(currentEbay.quantity) || 0;
-        const currentPrice = parseFloat(currentEbay.price) || 0;
-        const currentTitle = currentEbay.title || '';
-
-        if (currentQty !== snapshot.quantity) {
-            changes.push({ field: 'quantity', old: snapshot.quantity, new: currentQty });
+        const beforePrice = parseFloat(before.price) || 0;
+        const afterPrice = parseFloat(after.price) || 0;
+        const beforeQty = parseInt(before.quantity) || 0;
+        const afterQty = parseInt(after.quantity) || 0;
+        if (Math.abs(beforePrice - afterPrice) > priceEps) {
+            changes.push({ field: 'price', oldValue: beforePrice, newValue: afterPrice });
         }
-        if (currentPrice !== snapshot.price) {
-            changes.push({ field: 'price', old: snapshot.price, new: currentPrice });
+        if (beforeQty !== afterQty) {
+            changes.push({ field: 'quantity', oldValue: beforeQty, newValue: afterQty });
         }
-        if (currentTitle !== snapshot.title) {
-            changes.push({ field: 'title', old: snapshot.title, new: currentTitle });
+        if (opts.includeTitle && (before.title || '') !== (after.title || '')) {
+            changes.push({ field: 'title', oldValue: before.title || '', newValue: after.title || '' });
         }
-
         return changes;
+    },
+
+    // Legacy alias — forwards to detectChanges. Kept for callers not yet migrated.
+    detectEbayChanges(currentEbay, snapshot) {
+        return this.detectChanges(snapshot, currentEbay, { includeTitle: true })
+            .map(c => c.reason ? { field: c.field, reason: c.reason === 'no_baseline' ? 'no_snapshot' : c.reason } : { field: c.field, old: c.oldValue, new: c.newValue });
     },
 
     // Create a local inventory item from eBay data
@@ -1400,6 +1522,16 @@ const ebayAPI = {
 
         const ebayItems = ebayData.items || [];
 
+        // Cross-check: which SKUs have pending admin changes? (Point 3 cross-check)
+        // Don't auto-apply eBay-side changes for SKUs where admin has queued changes;
+        // Point 1's drift check in Apply handles the conflict when admin clicks Apply.
+        const pendingUpdates = await data.getPendingUpdates('pending');
+        const pendingQtySkus = new Set(
+            pendingUpdates
+                .filter(u => u.changes?.some(c => c.field === 'quantity'))
+                .map(u => u.sku)
+        );
+
         for (const ebayItem of ebayItems) {
             try {
                 const sku = ebayItem.sku || ebayItem.itemId;
@@ -1456,18 +1588,31 @@ const ebayAPI = {
                             // Local hasn't changed this field - accept eBay value
                             if (change.field === 'quantity') {
                                 // Handle quantity specially - detect sales
-                                const oldQty = snapshot?.quantity ?? localItem.lastSyncedQty ?? localItem.currentQty;
+                                const oldQty = snapshot?.quantity ?? localItem.currentQty;
                                 const newQty = change.new;
                                 if (newQty < oldQty) {
                                     const sold = oldQty - newQty;
-                                    updates.currentQty = Math.max(0, localItem.currentQty - sold);
-                                    await data.addHistory(sku, {
-                                        date: new Date(),
-                                        action: 'EBAY_SALE',
-                                        qty: -sold,
-                                        newTotal: updates.currentQty,
-                                        note: `${sold} sold on eBay (detected during pull)`
-                                    });
+                                    // Cross-check: if admin has a pending qty change for this SKU, defer —
+                                    // Point 1's drift check in Apply will reconcile against fresh eBay state.
+                                    if (pendingQtySkus.has(sku)) {
+                                        await data.addHistory(sku, {
+                                            date: new Date(),
+                                            action: 'EBAY_SALE_DEFERRED',
+                                            qty: -sold,
+                                            newTotal: localItem.currentQty,
+                                            note: `${sold} sold on eBay but admin change pending — deferred`
+                                        });
+                                        // Don't apply to currentQty; skip this change
+                                    } else {
+                                        updates.currentQty = Math.max(0, localItem.currentQty - sold);
+                                        await data.addHistory(sku, {
+                                            date: new Date(),
+                                            action: 'EBAY_SALE',
+                                            qty: -sold,
+                                            newTotal: updates.currentQty,
+                                            note: `${sold} sold on eBay (detected during pull)`
+                                        });
+                                    }
                                 }
                             } else if (change.field === 'price') {
                                 updates.price = change.new;
@@ -1699,6 +1844,14 @@ const ebayAPI = {
         const localMap = {};
         localItems.forEach(item => { localMap[item.sku] = item; });
 
+        // Cross-check: SKUs with pending admin qty changes (Point 3)
+        const pendingUpdates = await data.getPendingUpdates('pending');
+        const pendingQtySkus = new Set(
+            pendingUpdates
+                .filter(u => u.changes?.some(c => c.field === 'quantity'))
+                .map(u => u.sku)
+        );
+
         const processedSkus = new Set();
 
         // 3. Process items that exist on BOTH sides
@@ -1714,7 +1867,7 @@ const ebayAPI = {
 
                 const snapshot = fullItem.ebaySync?.snapshot;
                 const lastSyncTime = fullItem.ebaySync?.lastSyncTime;
-                const snapshotQty = snapshot?.quantity ?? fullItem.lastSyncedQty ?? fullItem.currentQty;
+                const snapshotQty = snapshot?.quantity ?? fullItem.currentQty;
                 const ebayQty = parseInt(ebayItem.quantity) || 0;
                 const localQty = fullItem.currentQty;
 
@@ -1724,6 +1877,21 @@ const ebayAPI = {
                 // Detect eBay sales (quantity decreased on eBay)
                 if (ebayQty < snapshotQty) {
                     salesDetected = snapshotQty - ebayQty;
+
+                    // Cross-check: if admin has a pending qty change, defer — Point 1's drift check handles it
+                    if (pendingQtySkus.has(sku)) {
+                        await data.addHistory(sku, {
+                            date: new Date(),
+                            action: 'EBAY_SALE_DEFERRED',
+                            qty: -salesDetected,
+                            newTotal: localQty,
+                            note: `${salesDetected} sold on eBay but admin change pending — deferred`
+                        });
+                        // Leave finalQty = localQty; skip local write
+                        results.updated.push({ sku, qty: localQty, salesDetected, deferred: true });
+                        continue;
+                    }
+
                     finalQty = Math.max(0, localQty - salesDetected);
 
                     await data.addHistory(sku, {
@@ -1952,59 +2120,126 @@ app.put('/api/updates/dismiss-all', async (req, res) => {
 });
 
 // Apply a pending update (actually perform the staged change)
-app.post('/api/updates/:id/apply', async (req, res) => {
+// Apply a pending update — eBay-first with drift check (Point 1)
+// Invariant: if eBay fails, local does not change. Local ↔ eBay stay in lockstep.
+app.post('/api/updates/:id/apply', ah(async (req, res) => {
+    const accountId = req.body?.accountId || null;
+    const force = req.body?.force === true; // bypass drift check
+    if (!accountId) throw new HttpError(400, 'Please select an eBay account first');
+
+    // Lock
+    const existingLock = ebayLocks.get(accountId);
+    if (existingLock && Date.now() - existingLock.startedAt < 5 * 60 * 1000) {
+        throw new HttpError(409, `Sync already in progress: ${existingLock.operation} (${Math.round((Date.now() - existingLock.startedAt) / 1000)}s ago)`);
+    }
+    ebayLocks.set(accountId, { operation: 'apply', startedAt: Date.now() });
+
     try {
-        // Fetch the pending update
         const allPending = await data.getPendingUpdates('pending');
         const update = allPending.find(u => u._id.toString() === req.params.id);
-        if (!update) return res.status(404).json({ error: 'Pending update not found' });
-
+        if (!update) throw new HttpError(404, 'Pending update not found');
         const { sku, updateType, changes } = update;
 
-        if (updateType === 'CREATE') {
-            // Set staged=false so item appears in inventory
+        // UPDATE: eBay-first flow with drift check
+        if (updateType === 'UPDATE') {
             const item = await data.getItem(sku);
-            if (!item) return res.status(404).json({ error: 'Staged item not found' });
-            await data.updateItem(sku, { staged: false });
-        } else if (updateType === 'UPDATE') {
-            const item = await data.getItem(sku);
-            if (!item) return res.status(404).json({ error: 'Item not found' });
-            const updates = {};
-            for (const change of changes) {
-                if (change.field === 'quantity') {
-                    updates.currentQty = change.newValue;
-                    const diff = change.newValue - item.currentQty;
-                    await data.addHistory(sku, { date: new Date(), action: diff >= 0 ? 'ADJUST_UP' : 'ADJUST_DOWN', qty: diff, newTotal: change.newValue, note: `Quantity changed to ${change.newValue}` });
-                } else if (change.field === 'price') {
-                    updates.price = change.newValue;
-                    const priceDiff = change.newValue - item.price;
-                    await data.addHistory(sku, { date: new Date(), action: 'PRICE_CHANGE', qty: priceDiff, newTotal: change.newValue, note: `Price changed to $${change.newValue}` });
-                } else if (change.field === 'description') {
-                    updates.description = change.newValue;
+            if (!item) throw new HttpError(404, 'Item not found');
+            const priceChange = changes.find(c => c.field === 'price');
+            const qtyChange = changes.find(c => c.field === 'quantity');
+            const descChange = changes.find(c => c.field === 'description');
+            const hasEbayListing = !!item.ebaySync?.ebayItemId;
+
+            // Gate 1: drift check against fresh eBay state
+            if (hasEbayListing && !force && (priceChange || qtyChange)) {
+                try {
+                    const current = await ebayAPI.getCurrentListingState(accountId, item.ebaySync.ebayItemId);
+                    const drifted = [];
+                    if (priceChange && Math.abs(current.price - (priceChange.oldValue ?? 0)) > 0.01) {
+                        drifted.push({ field: 'price', expected: priceChange.oldValue, actual: current.price });
+                    }
+                    if (qtyChange && current.quantity !== (qtyChange.oldValue ?? 0)) {
+                        drifted.push({ field: 'quantity', expected: qtyChange.oldValue, actual: current.quantity });
+                    }
+                    if (drifted.length > 0) {
+                        throw new HttpError(409, 'eBay has changed since this update was queued', { sku, drifted });
+                    }
+                } catch (driftErr) {
+                    if (driftErr.status === 409) throw driftErr;
+                    console.warn(`Drift check failed for ${sku}, proceeding:`, driftErr.message);
                 }
             }
+
+            // Gate 2: push to eBay first. On failure, nothing else happens.
+            if (hasEbayListing && (priceChange || qtyChange)) {
+                const newPrice = priceChange ? priceChange.newValue : item.price;
+                const newQty = qtyChange ? qtyChange.newValue : null;
+                await ebayAPI.reviseItemPrice(accountId, item.ebaySync.ebayItemId, newPrice, newQty);
+            }
+
+            // Gate 3: commit local + history + snapshot (only reached if eBay confirmed)
+            const updates = {};
+            if (qtyChange) {
+                updates.currentQty = qtyChange.newValue;
+                const diff = qtyChange.newValue - item.currentQty;
+                await data.addHistory(sku, { date: new Date(), action: diff >= 0 ? 'ADJUST_UP' : 'ADJUST_DOWN', qty: diff, newTotal: qtyChange.newValue, note: `Quantity changed to ${qtyChange.newValue}` });
+            }
+            if (priceChange) {
+                updates.price = priceChange.newValue;
+                const priceDiff = priceChange.newValue - item.price;
+                await data.addHistory(sku, { date: new Date(), action: 'PRICE_CHANGE', qty: priceDiff, newTotal: priceChange.newValue, note: `Price changed to $${priceChange.newValue}` });
+            }
+            if (descChange) updates.description = descChange.newValue;
+
+            if (hasEbayListing) {
+                updates.ebaySync = {
+                    ...(item.ebaySync || {}),
+                    snapshot: {
+                        quantity: updates.currentQty ?? item.currentQty,
+                        price: updates.price ?? item.price,
+                        title: updates.description ?? item.description,
+                        description: updates.description ?? item.description,
+                        condition: item.condition || '',
+                        takenAt: new Date()
+                    },
+                    lastSyncTime: new Date(),
+                    status: 'synced'
+                };
+            }
             await data.updateItem(sku, updates);
+            await data.dismissPendingUpdate(req.params.id);
+            if (!USE_LOCAL_DB) {
+                await db.PendingUpdate.findByIdAndUpdate(req.params.id, { status: 'pushed' });
+            } else {
+                const localUpdate = (localInventory.pendingUpdates || []).find(u => u._id === req.params.id);
+                if (localUpdate) { localUpdate.status = 'pushed'; saveLocalData(); }
+            }
+            return res.json({ message: hasEbayListing ? 'Update applied & synced to eBay' : 'Update applied locally', updateType, ebaySynced: hasEbayListing });
+        }
+
+        // CREATE / DELETE / SKU_CHANGE — eBay-first ordering not applicable (no existing listing or local-only op)
+        if (updateType === 'CREATE') {
+            const item = await data.getItem(sku);
+            if (!item) throw new HttpError(404, 'Staged item not found');
+            await data.updateItem(sku, { staged: false });
         } else if (updateType === 'DELETE') {
             await data.deleteItem(sku);
         } else if (updateType === 'SKU_CHANGE') {
             const oldItem = await data.getItem(sku);
-            if (!oldItem) return res.status(404).json({ error: 'Item not found' });
+            if (!oldItem) throw new HttpError(404, 'Item not found');
             const skuChange = changes.find(c => c.field === 'sku');
             const descChange = changes.find(c => c.field === 'description');
-            if (!skuChange) return res.status(400).json({ error: 'SKU change data missing' });
+            if (!skuChange) throw new HttpError(400, 'SKU change data missing');
             const newSku = skuChange.newValue;
             const newItemCode = newSku.substring(0, 4);
-            const newLocation = newSku.substring(4);
-            const newDrawer = newLocation.substring(0, 3);
-            const newPosition = newLocation.substring(3);
-            const newFullLocation = `${newDrawer}-${newPosition}`;
+            const newDrawer = newSku.substring(4, 7);
+            const newPosition = newSku.substring(7);
             const newItem = {
-                sku: newSku, itemCode: newItemCode, drawerNumber: newDrawer, positionNumber: newPosition, fullLocation: newFullLocation,
+                sku: newSku, itemCode: newItemCode, drawerNumber: newDrawer, positionNumber: newPosition, fullLocation: `${newDrawer}-${newPosition}`,
                 price: oldItem.price, currentQty: oldItem.currentQty,
                 description: descChange ? descChange.newValue : oldItem.description,
                 categoryId: oldItem.categoryId, categoryName: oldItem.categoryName, condition: oldItem.condition,
                 itemSpecifics: oldItem.itemSpecifics || {}, dateAdded: oldItem.dateAdded, lastModified: new Date(),
-                lastSyncedQty: oldItem.lastSyncedQty, ebaySync: oldItem.ebaySync || {},
+                ebaySync: oldItem.ebaySync || {},
                 staged: false,
                 history: [...(oldItem.history || []), { date: new Date(), action: 'SKU_CHANGE', qty: 0, newTotal: oldItem.currentQty, note: `SKU changed from ${sku} to ${newSku}` }]
             };
@@ -2012,67 +2247,18 @@ app.post('/api/updates/:id/apply', async (req, res) => {
             await data.deleteItem(sku);
         }
 
-        // Push change to eBay — only if user has selected an account
-        let ebaySynced = false;
-        const requestedAccountId = req.body?.accountId;
-        if (!requestedAccountId) {
-            return res.status(400).json({ error: 'Please select an eBay account first' });
-        }
-        try {
-            const accounts = await data.getAllAccounts();
-            const activeAccount = accounts.find(a => a.id === requestedAccountId || a.accountId === requestedAccountId);
-            if (activeAccount && updateType !== 'CREATE') {
-                const updatedItem = updateType === 'DELETE' ? null : await data.getItem(updateType === 'SKU_CHANGE' ? changes.find(c => c.field === 'sku')?.newValue : sku);
-                if (updatedItem && updatedItem.ebaySync?.ebayItemId) {
-                    const ebayItemId = updatedItem.ebaySync.ebayItemId;
-                    const priceChange = changes.find(c => c.field === 'price');
-                    const qtyChange = changes.find(c => c.field === 'quantity');
-                    const newPrice = priceChange ? priceChange.newValue : updatedItem.price;
-                    const newQty = qtyChange ? qtyChange.newValue : null;
-
-                    // Use Trading API (ReviseFixedPriceItem) — works for all listings
-                    await ebayAPI.reviseItemPrice(activeAccount.id, ebayItemId, newPrice, newQty);
-                    console.log(`Updated eBay listing ${ebayItemId} via Trading API`);
-
-                    // Update the sync snapshot
-                    await data.updateItem(sku, {
-                        ebaySync: {
-                            ...updatedItem.ebaySync,
-                            snapshot: ebayAPI.captureLocalSnapshot(updatedItem),
-                            lastSyncTime: new Date(),
-                            status: 'synced'
-                        }
-                    });
-                    ebaySynced = true;
-                } else if (updateType === 'DELETE' && updatedItem === null) {
-                    // Item was deleted - eBay listing remains (user manages separately)
-                }
-            }
-        } catch (ebayErr) {
-            console.warn('eBay sync failed (local update still applied):', ebayErr.message);
-            // eBay failed — return old values so frontend can offer undo
-            return res.json({
-                message: `Local update applied but eBay sync failed: ${ebayErr.message}`,
-                updateType, ebaySynced: false, ebayFailed: true,
-                undoData: { sku, updateType, changes }
-            });
-        }
-
-        // Mark update as applied
         await data.dismissPendingUpdate(req.params.id);
-        // Update status to 'pushed' instead of 'dismissed'
         if (!USE_LOCAL_DB) {
             await db.PendingUpdate.findByIdAndUpdate(req.params.id, { status: 'pushed' });
         } else {
             const localUpdate = (localInventory.pendingUpdates || []).find(u => u._id === req.params.id);
             if (localUpdate) { localUpdate.status = 'pushed'; saveLocalData(); }
         }
-
-        res.json({ message: ebaySynced ? 'Update applied & synced to eBay' : 'Update applied locally', updateType, ebaySynced });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+        res.json({ message: 'Update applied locally', updateType, ebaySynced: false });
+    } finally {
+        ebayLocks.delete(accountId);
     }
-});
+}));
 
 // Undo a local update (revert to old values)
 app.post('/api/updates/undo', async (req, res) => {
@@ -2176,7 +2362,16 @@ app.post('/api/inventory', async (req, res) => {
         if (existingByLocation) return res.status(400).json({ error: `Location ${fullLocation} already has item ${existingByLocation.itemCode}` });
 
         const now = new Date();
-        const newItem = { sku, itemCode: itemId, drawerNumber: drawerStr, positionNumber: positionStr, fullLocation, price: parseFloat(price) || 0, currentQty: qtyToAdd, description, staged: true, dateAdded: now, lastModified: now, history: [{ date: now, action: 'CREATE', qty: qtyToAdd, newTotal: qtyToAdd, note: 'Item created' }] };
+        const newItem = {
+            sku, itemCode: itemId, drawerNumber: drawerStr, positionNumber: positionStr, fullLocation,
+            price: parseFloat(price) || 0, currentQty: qtyToAdd, description,
+            staged: true, dateAdded: now, lastModified: now,
+            ebaySync: {
+                snapshot: { quantity: qtyToAdd, price: parseFloat(price) || 0, title: description, description: '', condition: '', takenAt: now },
+                status: 'not_synced'
+            },
+            history: [{ date: now, action: 'CREATE', qty: qtyToAdd, newTotal: qtyToAdd, note: 'Item created' }]
+        };
         await data.createItem(newItem);
         // Queue pending update
         await data.createPendingUpdate({ sku, itemCode: itemId, description, updateType: 'CREATE', changes: [
@@ -2510,87 +2705,47 @@ app.post('/api/ebay/sync/:accountId/:sku', async (req, res) => {
 });
 
 // Pull from eBay to local inventory
-app.post('/api/ebay/pull/:accountId', async (req, res) => {
-    try {
-        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
-            return res.status(401).json({ error: 'eBay account not connected' });
-        }
-
-        const results = await ebayAPI.pullFromEbay(req.params.accountId);
-
-        const message = `Pulled from eBay: ${results.created.length} imported, ${results.updated.length} updated, ${results.skipped.length} skipped`;
-
-        res.json({
-            message,
-            summary: {
-                created: results.created.length,
-                updated: results.updated.length,
-                skipped: results.skipped.length,
-                errors: results.errors.length
-            },
-            details: results
-        });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
+app.post('/api/ebay/pull/:accountId', ah(async (req, res) => {
+    const accountId = req.params.accountId;
+    if (!(await ebayAPI.isAccountAuthenticated(accountId))) throw new HttpError(401, 'eBay account not connected');
+    const results = await withEbayLock(accountId, 'pull', () => ebayAPI.pullFromEbay(accountId));
+    res.json({
+        message: `Pulled from eBay: ${results.created.length} imported, ${results.updated.length} updated, ${results.skipped.length} skipped`,
+        summary: { created: results.created.length, updated: results.updated.length, skipped: results.skipped.length, errors: results.errors.length },
+        details: results
+    });
+}));
 
 // Push from local inventory to eBay
-app.post('/api/ebay/push/:accountId', async (req, res) => {
-    try {
-        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
-            return res.status(401).json({ error: 'eBay account not connected' });
-        }
-
-        const results = await ebayAPI.pushToEbay(req.params.accountId);
-
-        const message = `Pushed to eBay: ${results.created.length} created, ${results.pushed.length} updated, ${results.skipped.length} skipped`;
-
-        res.json({
-            message,
-            summary: {
-                created: results.created.length,
-                pushed: results.pushed.length,
-                skipped: results.skipped.length,
-                errors: results.errors.length
-            },
-            details: results
-        });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
+app.post('/api/ebay/push/:accountId', ah(async (req, res) => {
+    const accountId = req.params.accountId;
+    if (!(await ebayAPI.isAccountAuthenticated(accountId))) throw new HttpError(401, 'eBay account not connected');
+    const results = await withEbayLock(accountId, 'push', () => ebayAPI.pushToEbay(accountId));
+    res.json({
+        message: `Pushed to eBay: ${results.created.length} created, ${results.pushed.length} updated, ${results.skipped.length} skipped`,
+        summary: { created: results.created.length, pushed: results.pushed.length, skipped: results.skipped.length, errors: results.errors.length },
+        details: results
+    });
+}));
 
 // Smart two-way sync
-app.post('/api/ebay/sync-all/:accountId', async (req, res) => {
-    try {
-        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
-            return res.status(401).json({ error: 'eBay account not connected' });
-        }
+app.post('/api/ebay/sync-all/:accountId', ah(async (req, res) => {
+    const accountId = req.params.accountId;
+    if (!(await ebayAPI.isAccountAuthenticated(accountId))) throw new HttpError(401, 'eBay account not connected');
+    const results = await withEbayLock(accountId, 'sync', () => ebayAPI.smartSyncAll(accountId));
 
-        const results = await ebayAPI.smartSyncAll(req.params.accountId);
-
-        let message = `Sync complete: `;
-        const parts = [];
-        if (results.imported.length > 0) parts.push(`${results.imported.length} imported from eBay`);
-        if (results.exported.length > 0) parts.push(`${results.exported.length} exported to eBay`);
-        if (results.updated.length > 0) parts.push(`${results.updated.length} updated`);
-        if (results.sales.length > 0) {
-            const totalSold = results.sales.reduce((sum, s) => sum + s.sold, 0);
-            parts.push(`${totalSold} eBay sales detected`);
-        }
-        if (results.errors.length > 0) parts.push(`${results.errors.length} errors`);
-        message += parts.length > 0 ? parts.join(', ') : 'No changes';
-
-        res.json({
-            message,
-            summary: {
-                imported: results.imported.length,
-                exported: results.exported.length,
-                updated: results.updated.length,
-                sales: results.sales.length,
-                errors: results.errors.length
-            },
-            details: results
-        });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
+    const parts = [];
+    if (results.imported.length > 0) parts.push(`${results.imported.length} imported from eBay`);
+    if (results.exported.length > 0) parts.push(`${results.exported.length} exported to eBay`);
+    if (results.updated.length > 0) parts.push(`${results.updated.length} updated`);
+    if (results.sales.length > 0) parts.push(`${results.sales.reduce((sum, s) => sum + s.sold, 0)} eBay sales detected`);
+    if (results.errors.length > 0) parts.push(`${results.errors.length} errors`);
+    res.json({
+        message: `Sync complete: ${parts.length > 0 ? parts.join(', ') : 'No changes'}`,
+        summary: { imported: results.imported.length, exported: results.exported.length, updated: results.updated.length, sales: results.sales.length, errors: results.errors.length },
+        details: results
+    });
+}));
 
 // Compare local inventory with eBay listings - find differences
 app.get('/api/ebay/compare/:accountId', async (req, res) => {
@@ -2743,12 +2898,10 @@ app.post('/api/ebay/backfill-images/:accountId', async (req, res) => {
 });
 
 // Compare and queue differences as pending updates
-app.post('/api/ebay/compare-and-queue/:accountId', async (req, res) => {
-    try {
-        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
-            return res.status(401).json({ error: 'eBay account not connected' });
-        }
-
+app.post('/api/ebay/compare-and-queue/:accountId', ah(async (req, res) => {
+  const accountId = req.params.accountId;
+  if (!(await ebayAPI.isAccountAuthenticated(accountId))) throw new HttpError(401, 'eBay account not connected');
+  const result = await withEbayLock(accountId, 'compare', async () => {
         const skipSkus = req.body.skipSkus || []; // SKUs user chose to skip (conflicts)
         const forceSkus = req.body.forceSkus || []; // SKUs user chose to overwrite
 
@@ -2850,7 +3003,12 @@ app.post('/api/ebay/compare-and-queue/:accountId', async (req, res) => {
                     description: ebayItem.title || '',
                     imageUrl: ebayItem.pictureUrl || null,
                     staged: true,
-                    ebaySync: { ebayItemId: ebayItem.itemId, status: 'synced' }
+                    ebaySync: {
+                        ebayItemId: ebayItem.itemId,
+                        snapshot: ebayAPI.captureEbaySnapshot(ebayItem),
+                        lastSyncTime: new Date(),
+                        status: 'synced'
+                    }
                 });
 
                 await data.createPendingUpdate({
@@ -2871,22 +3029,17 @@ app.post('/api/ebay/compare-and-queue/:accountId', async (req, res) => {
             }
         }
 
-        res.json({
+        return {
             message: conflicts.length > 0
                 ? `${queued} queued, ${conflicts.length} conflicts need your decision`
                 : `Comparison complete: ${queued} differences queued in Updates`,
             queued,
             conflicts,
-            summary: {
-                totalLocal: localItems.length,
-                totalEbay: ebayData.items?.length || 0
-            }
-        });
-    } catch (err) {
-        console.error('Compare-and-queue error:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
+            summary: { totalLocal: localItems.length, totalEbay: ebayData.items?.length || 0 }
+        };
+  });
+  res.json(result);
+}));
 
 // Resolve a difference - update local or push to eBay
 app.post('/api/ebay/resolve/:accountId', async (req, res) => {
@@ -3055,7 +3208,7 @@ app.post('/api/ebay/publish/:accountId/:sku', async (req, res) => {
         const result = await ebayAPI.addFixedPriceItem(req.params.accountId, {
             SKU: item.sku, Price: item.price || 9.99, Quantity: item.currentQty,
             Description: item.description, Condition: item.condition || 'NEW',
-            CategoryId: item.categoryId, ImageUrl: item.imageUrl || null
+            CategoryId: item.categoryId, ImageUrl: item.imageUrl || null, ItemSpecifics: item.itemSpecifics || {}
         });
 
         // Save eBay item ID
@@ -3074,45 +3227,29 @@ app.post('/api/ebay/publish/:accountId/:sku', async (req, res) => {
 });
 
 // Publish all items as listings
-app.post('/api/ebay/publish-all/:accountId', async (req, res) => {
-    try {
-        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
-            return res.status(401).json({ error: 'eBay account not connected' });
-        }
+app.post('/api/ebay/publish-all/:accountId', ah(async (req, res) => {
+    const accountId = req.params.accountId;
+    if (!(await ebayAPI.isAccountAuthenticated(accountId))) throw new HttpError(401, 'eBay account not connected');
 
-        // Get business policies first
-        let policies;
-        try {
-            policies = await ebayAPI.getBusinessPolicies(req.params.accountId);
-        } catch (err) {
-            return res.status(400).json({ error: err.message });
-        }
-
-        const results = { published: [], skipped: [], failed: [] };
+    const results = await withEbayLock(accountId, 'publish-all', async () => {
+        const out = { published: [], skipped: [], failed: [] };
         const items = await data.getAllItems();
-
         for (const item of items) {
             try {
                 const fullItem = await data.getItem(item.SKU);
                 if (!fullItem || !fullItem.description) {
-                    results.failed.push({ sku: item.SKU, error: 'Missing description' });
+                    out.failed.push({ sku: item.SKU, error: 'Missing description' });
                     continue;
                 }
-
-                // Skip items that already have an eBay listing
                 if (fullItem.ebaySync?.ebayItemId) {
-                    results.skipped.push({ sku: fullItem.sku, reason: 'Already on eBay' });
+                    out.skipped.push({ sku: fullItem.sku, reason: 'Already on eBay' });
                     continue;
                 }
-
-                // Create listing via Trading API
-                const result = await ebayAPI.addFixedPriceItem(req.params.accountId, {
+                const result = await ebayAPI.addFixedPriceItem(accountId, {
                     SKU: fullItem.sku, Price: fullItem.price || 9.99, Quantity: fullItem.currentQty,
                     Description: fullItem.description, Condition: fullItem.condition || 'NEW',
-                    CategoryId: fullItem.categoryId, ImageUrl: fullItem.imageUrl || null
+                    CategoryId: fullItem.categoryId, ImageUrl: fullItem.imageUrl || null, ItemSpecifics: fullItem.itemSpecifics || {}
                 });
-
-                // Save the eBay item ID back to our database
                 await data.updateItem(fullItem.sku, {
                     ebaySync: {
                         ebayItemId: result.itemId || null,
@@ -3121,19 +3258,19 @@ app.post('/api/ebay/publish-all/:accountId', async (req, res) => {
                         status: 'synced'
                     }
                 });
-
-                results.published.push({ sku: fullItem.sku, listingId: result.itemId });
+                out.published.push({ sku: fullItem.sku, listingId: result.itemId });
             } catch (err) {
-                results.failed.push({ sku: item.SKU, error: err.message });
+                out.failed.push({ sku: item.SKU, error: err.message });
             }
         }
+        return out;
+    });
 
-        res.json({
-            message: `Published ${results.published.length} listings, ${results.failed.length} failed`,
-            results
-        });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
+    res.json({
+        message: `Published ${results.published.length} listings, ${results.failed.length} failed`,
+        results
+    });
+}));
 
 // Main app
 app.get('/app', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'app.html')); });
@@ -3252,16 +3389,8 @@ app.get('/api/keep-alive', async (req, res) => {
     }
 });
 
-// ============================================
-// GLOBAL ERROR HANDLER — must be last app.use()
-// ============================================
-app.use((err, req, res, next) => {
-    const status = err.status || 500;
-    const body = { error: err.message || 'Internal error' };
-    if (err.details) body.details = err.details;
-    if (status >= 500) console.error(`[${req.method} ${req.path}]`, err);
-    res.status(status).json(body);
-});
+// Global error handler — must be last app.use()
+app.use(errorMiddleware);
 
 // ============================================
 // START SERVER
