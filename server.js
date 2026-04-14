@@ -2018,7 +2018,10 @@ const ebayAPI = {
                 // Check if item already exists locally by eBay ItemID (in case SKU was changed)
                 const existingByEbayId = ebayItem.itemId ? await data.getItemByEbayId(ebayItem.itemId) : null;
                 if (existingByEbayId) {
-                    console.log(`Skipping import - item already exists locally with SKU ${existingByEbayId.sku} (eBay ID: ${ebayItem.itemId})`);
+                    // Backfill missing imageUrl for items matched by eBay ID
+                    if (ebayItem.pictureUrl && !existingByEbayId.imageUrl) {
+                        await data.updateItem(existingByEbayId.sku, { imageUrl: ebayItem.pictureUrl });
+                    }
                     results.skipped.push({ sku, reason: 'Already exists (matched by eBay ItemID)' });
                     continue;
                 }
