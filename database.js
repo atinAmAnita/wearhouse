@@ -84,7 +84,8 @@ const ebayAccountSchema = new mongoose.Schema({
         token_type: String
     },
     addedAt: { type: Date, default: Date.now },
-    lastSync: { type: Date, default: null }
+    lastSync: { type: Date, default: null },
+    cronEnabled: { type: Boolean, default: true }
 });
 
 // Pending Update Schema (queue for changes not yet synced to eBay)
@@ -297,6 +298,12 @@ const pendingUpdates = {
         await connectDB();
         if (!isConnected) return 0;
         return PendingUpdate.countDocuments({ status });
+    },
+
+    async updateChanges(id, newChanges) {
+        await connectDB();
+        if (!isConnected) return null;
+        return PendingUpdate.findByIdAndUpdate(id, { changes: newChanges }, { new: true }).lean();
     }
 };
 

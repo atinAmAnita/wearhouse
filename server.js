@@ -185,7 +185,8 @@ const data = {
                 name: a.name,
                 hasValidToken: !!a.tokens?.refresh_token,
                 lastSync: a.lastSync,
-                addedAt: a.addedAt || a.createdAt
+                addedAt: a.addedAt || a.createdAt,
+                cronEnabled: a.cronEnabled !== false
             }));
         }
         return Object.entries(localAccounts).map(([id, acc]) => ({
@@ -193,7 +194,8 @@ const data = {
             name: acc.name,
             hasValidToken: !!acc.tokens?.refresh_token,
             lastSync: acc.lastSync,
-            addedAt: acc.addedAt || acc.createdAt
+            addedAt: acc.addedAt || acc.createdAt,
+            cronEnabled: acc.cronEnabled !== false
         }));
     },
 
@@ -247,6 +249,18 @@ const data = {
         return (localInventory.pendingUpdates || [])
             .filter(u => u.status === status)
             .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    },
+
+    async updatePendingChanges(id, newChanges) {
+        if (!USE_LOCAL_DB) {
+            return db.pendingUpdates.updateChanges(id, newChanges);
+        }
+        const update = (localInventory.pendingUpdates || []).find(u => u._id === id);
+        if (update) {
+            update.changes = newChanges;
+            saveLocalData();
+        }
+        return update;
     },
 
     async dismissPendingUpdate(id) {
@@ -1463,6 +1477,50 @@ const ebayAPI = {
             .map(c => c.reason ? { field: c.field, reason: c.reason === 'no_baseline' ? 'no_snapshot' : c.reason } : { field: c.field, old: c.oldValue, new: c.newValue });
     },
 
+    // Rebase pending updates to reflect current eBay state (Point B hybrid).
+    // For price/title/description: update oldValue to current eBay value, keep newValue.
+    // For quantity: if eBay dropped (sale detected), subtract the sold amount from newValue too.
+    // Rationale: admin thinks of price as absolute; admin's qty intent is stock-delta, not absolute.
+    async rebasePendingUpdatesForSku(sku, ebayItem, soldOnEbay) {
+        const pending = await data.getPendingUpdates('pending');
+        const relevant = pending.filter(u => u.sku === sku && u.updateType === 'UPDATE');
+        for (const update of relevant) {
+            let mutated = false;
+            const newChanges = update.changes.map(c => {
+                const updated = { ...c };
+                if (c.field === 'price') {
+                    const ebayPrice = parseFloat(ebayItem.price) || 0;
+                    if (Math.abs((c.oldValue ?? 0) - ebayPrice) > 0.01) {
+                        updated.oldValue = ebayPrice;
+                        mutated = true;
+                    }
+                } else if (c.field === 'quantity') {
+                    const ebayQty = parseInt(ebayItem.quantity) || 0;
+                    if (c.oldValue !== ebayQty) {
+                        updated.oldValue = ebayQty;
+                        mutated = true;
+                    }
+                    if (soldOnEbay > 0) {
+                        // Admin's intent was stock-delta; subtract the sale from the target
+                        updated.newValue = Math.max(0, (c.newValue ?? 0) - soldOnEbay);
+                        mutated = true;
+                    }
+                } else if (c.field === 'description' || c.field === 'title') {
+                    const ebayTitle = ebayItem.title || '';
+                    if ((c.oldValue || '') !== ebayTitle) {
+                        updated.oldValue = ebayTitle;
+                        mutated = true;
+                    }
+                }
+                return updated;
+            });
+            if (mutated) {
+                await data.updatePendingChanges(update._id.toString(), newChanges);
+                console.log(`Rebased pending update ${update._id} for SKU ${sku} (sold=${soldOnEbay})`);
+            }
+        }
+    },
+
     // Create a local inventory item from eBay data
     createLocalItemFromEbay(ebayItem) {
         // Generate SKU from eBay item ID if no SKU
@@ -1484,6 +1542,7 @@ const ebayAPI = {
             categoryId: ebayItem.categoryId || null,
             categoryName: ebayItem.categoryName || null,
             itemSpecifics: {},
+            imageUrl: ebayItem.pictureUrl || null,
             dateAdded: new Date(),
             lastModified: new Date(),
             lastSyncedQty: parseInt(ebayItem.quantity) || 0,
@@ -1560,6 +1619,11 @@ const ebayAPI = {
 
                     const ebayChanges = this.detectEbayChanges(ebayItem, snapshot);
 
+                    // Backfill missing imageUrl opportunistically
+                    if (ebayItem.pictureUrl && !localItem.imageUrl) {
+                        await data.updateItem(sku, { imageUrl: ebayItem.pictureUrl });
+                    }
+
                     if (ebayChanges.length === 0) {
                         results.skipped.push({ sku, reason: 'No eBay changes' });
                         continue;
@@ -1592,17 +1656,17 @@ const ebayAPI = {
                                 const newQty = change.new;
                                 if (newQty < oldQty) {
                                     const sold = oldQty - newQty;
-                                    // Cross-check: if admin has a pending qty change for this SKU, defer —
-                                    // Point 1's drift check in Apply will reconcile against fresh eBay state.
+                                    // Cross-check: if admin has a pending qty change for this SKU,
+                                    // rebase the pending update (subtract sold from newValue) instead of deferring.
                                     if (pendingQtySkus.has(sku)) {
+                                        await this.rebasePendingUpdatesForSku(sku, ebayItem, sold);
                                         await data.addHistory(sku, {
                                             date: new Date(),
-                                            action: 'EBAY_SALE_DEFERRED',
+                                            action: 'EBAY_SALE_REBASED',
                                             qty: -sold,
                                             newTotal: localItem.currentQty,
-                                            note: `${sold} sold on eBay but admin change pending — deferred`
+                                            note: `${sold} sold on eBay — pending update rebased (newValue -= ${sold})`
                                         });
-                                        // Don't apply to currentQty; skip this change
                                     } else {
                                         updates.currentQty = Math.max(0, localItem.currentQty - sold);
                                         await data.addHistory(sku, {
@@ -1634,6 +1698,11 @@ const ebayAPI = {
                     }
 
                     if (Object.keys(updates).length > 0) {
+                        // Rebase pending updates (price/title only; qty was already rebased in the sale branch)
+                        if (pendingQtySkus.has(sku) || changedFields.includes('price') || changedFields.includes('title')) {
+                            await this.rebasePendingUpdatesForSku(sku, ebayItem, 0);
+                        }
+
                         // Update local item
                         updates.ebaySync = {
                             snapshot: this.captureEbaySnapshot(ebayItem),
@@ -1866,6 +1935,11 @@ const ebayAPI = {
                 const fullItem = await data.getItem(sku);
                 if (!fullItem) continue;
 
+                // Backfill missing imageUrl opportunistically
+                if (ebayItem.pictureUrl && !fullItem.imageUrl) {
+                    await data.updateItem(sku, { imageUrl: ebayItem.pictureUrl });
+                }
+
                 const snapshot = fullItem.ebaySync?.snapshot;
                 const lastSyncTime = fullItem.ebaySync?.lastSyncTime;
                 const snapshotQty = snapshot?.quantity ?? fullItem.currentQty;
@@ -1879,17 +1953,17 @@ const ebayAPI = {
                 if (ebayQty < snapshotQty) {
                     salesDetected = snapshotQty - ebayQty;
 
-                    // Cross-check: if admin has a pending qty change, defer — Point 1's drift check handles it
+                    // Cross-check: if admin has a pending qty change, rebase it (subtract sold from newValue)
                     if (pendingQtySkus.has(sku)) {
+                        await this.rebasePendingUpdatesForSku(sku, ebayItem, salesDetected);
                         await data.addHistory(sku, {
                             date: new Date(),
-                            action: 'EBAY_SALE_DEFERRED',
+                            action: 'EBAY_SALE_REBASED',
                             qty: -salesDetected,
                             newTotal: localQty,
-                            note: `${salesDetected} sold on eBay but admin change pending — deferred`
+                            note: `${salesDetected} sold on eBay — pending update rebased (newValue -= ${salesDetected})`
                         });
-                        // Leave finalQty = localQty; skip local write
-                        results.updated.push({ sku, qty: localQty, salesDetected, deferred: true });
+                        results.updated.push({ sku, qty: localQty, salesDetected, rebased: true });
                         continue;
                     }
 
@@ -2763,6 +2837,11 @@ app.post('/api/cron/sync-all-accounts', ah(async (req, res) => {
     for (const account of accounts) {
         if (!account.hasValidToken) {
             results.push({ accountId: account.id, account: account.name, status: 'skipped', reason: 'no valid token' });
+            continue;
+        }
+        // Per-account cron toggle (default enabled when field absent)
+        if (account.cronEnabled === false) {
+            results.push({ accountId: account.id, account: account.name, status: 'skipped', reason: 'cron disabled by admin' });
             continue;
         }
         try {
