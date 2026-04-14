@@ -2747,6 +2747,49 @@ app.post('/api/ebay/sync-all/:accountId', ah(async (req, res) => {
     });
 }));
 
+// Cron endpoint — runs smartSyncAll on every account with a valid token.
+// Called by external cron service (cron-job.org) on a schedule.
+// Requires Authorization: Bearer <CRON_SECRET> header to prevent abuse.
+app.post('/api/cron/sync-all-accounts', ah(async (req, res) => {
+    const expected = process.env.CRON_SECRET;
+    if (!expected) throw new HttpError(500, 'CRON_SECRET env var not configured');
+    const auth = req.headers.authorization || '';
+    const provided = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    if (provided !== expected) throw new HttpError(401, 'Unauthorized');
+
+    const accounts = await data.getAllAccounts();
+    const results = [];
+    for (const account of accounts) {
+        if (!account.hasValidToken) {
+            results.push({ accountId: account.id, account: account.name, status: 'skipped', reason: 'no valid token' });
+            continue;
+        }
+        try {
+            const syncResult = await withEbayLock(account.id, 'cron-sync', () => ebayAPI.smartSyncAll(account.id));
+            results.push({
+                accountId: account.id,
+                account: account.name,
+                status: 'synced',
+                imported: syncResult.imported.length,
+                exported: syncResult.exported.length,
+                updated: syncResult.updated.length,
+                sales: syncResult.sales.length,
+                errors: syncResult.errors.length
+            });
+        } catch (err) {
+            // 409 (manual sync in progress) is expected and not an error
+            if (err.status === 409) {
+                results.push({ accountId: account.id, account: account.name, status: 'skipped', reason: 'manual sync in progress' });
+            } else {
+                console.error(`Cron sync failed for ${account.name}:`, err.message);
+                results.push({ accountId: account.id, account: account.name, status: 'error', error: err.message });
+            }
+        }
+    }
+    console.log('[cron] sync-all-accounts:', JSON.stringify(results));
+    res.json({ ranAt: new Date().toISOString(), results });
+}));
+
 // Compare local inventory with eBay listings - find differences
 app.get('/api/ebay/compare/:accountId', async (req, res) => {
     try {
