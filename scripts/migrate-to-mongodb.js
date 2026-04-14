@@ -1,5 +1,9 @@
 /**
- * Migration script to transfer local inventory.json to MongoDB
+ * HISTORICAL: One-time migration script. Ran on 2026-02-05 to move JSON → Mongo.
+ * DO NOT RE-RUN — will duplicate data.
+ * Kept for reference only.
+ *
+ * Original: Migration script to transfer local inventory.json to MongoDB
  * Run once: node migrate-to-mongodb.js
  */
 

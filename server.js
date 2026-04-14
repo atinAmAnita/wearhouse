@@ -13,6 +13,22 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ============================================
+// ERROR HANDLING INFRASTRUCTURE
+// ============================================
+// HttpError: throw this from any route to return a specific status code + message
+class HttpError extends Error {
+    constructor(status, message, details) {
+        super(message);
+        this.status = status;
+        this.details = details;
+    }
+}
+
+// ah(): wrap async route handlers so thrown errors reach the global error middleware
+// Use: app.get('/path', ah(async (req, res) => { ... }))
+const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+// ============================================
 // DATABASE MODE CONFIGURATION
 // ============================================
 // Default: Use MongoDB (live database) for both local and production
@@ -2333,112 +2349,6 @@ app.get('/api/export/ebay', async (req, res) => {
     res.send(csv);
 });
 
-// Debug: Test revise item price on eBay (returns raw XML for debugging)
-app.get('/api/debug/revise-test/:accountId/:itemId/:price', async (req, res) => {
-    try {
-        const { accountId, itemId, price } = req.params;
-        let account = await ebayAPI.ensureFreshToken(accountId);
-        const token = account.tokens.access_token;
-        const tradingEndpoint = config.ebay.environment === 'production'
-            ? 'https://api.ebay.com/ws/api.dll'
-            : 'https://api.sandbox.ebay.com/ws/api.dll';
-
-        const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
-<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
-    <RequesterCredentials>
-        <eBayAuthToken>${token}</eBayAuthToken>
-    </RequesterCredentials>
-    <Item>
-        <ItemID>${itemId}</ItemID>
-        <StartPrice currencyID="USD">${parseFloat(price).toFixed(2)}</StartPrice>
-    </Item>
-    <ErrorLanguage>en_US</ErrorLanguage>
-    <WarningLevel>High</WarningLevel>
-</ReviseFixedPriceItemRequest>`;
-
-        const response = await fetch(tradingEndpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'text/xml',
-                'X-EBAY-API-SITEID': '0',
-                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
-                'X-EBAY-API-CALL-NAME': 'ReviseFixedPriceItem',
-                'X-EBAY-API-IAF-TOKEN': token
-            },
-            body: xmlRequest
-        });
-
-        const xmlText = await response.text();
-        // Return raw XML and parsed ack
-        const ackMatch = xmlText.match(/<Ack>([^<]+)<\/Ack>/);
-        res.json({ ack: ackMatch?.[1], rawXml: xmlText });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Debug: Check what getOffers returns for a SKU
-app.get('/api/debug/offers/:accountId/:sku', async (req, res) => {
-    try {
-        const result = await ebayAPI.getOffers(req.params.accountId, req.params.sku);
-        res.json(result);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Debug: Pull listings directly from eBay and export to Excel
-app.get('/api/debug/ebay-export/:accountId', async (req, res) => {
-    try {
-        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
-            return res.status(401).json({ error: 'eBay account not connected or token expired' });
-        }
-
-        // Pull inventory directly from eBay
-        const ebayData = await ebayAPI.getInventoryItems(req.params.accountId);
-
-        if (!ebayData.inventoryItems || ebayData.inventoryItems.length === 0) {
-            return res.status(404).json({ error: 'No items found on eBay' });
-        }
-
-        // Format for Excel
-        const excelData = ebayData.inventoryItems.map(item => ({
-            'SKU': item.sku,
-            'Title': item.product?.title || '',
-            'Quantity': item.availability?.shipToLocationAvailability?.quantity || 0,
-            'Condition': item.condition || '',
-            'Description': item.product?.description || '',
-            'Warehouse Location': item.product?.aspects?.['Warehouse Location']?.[0] || ''
-        }));
-
-        // Create Excel workbook
-        const workbook = XLSX.utils.book_new();
-        const worksheet = XLSX.utils.json_to_sheet(excelData);
-
-        // Set column widths
-        worksheet['!cols'] = [
-            { wch: 15 }, // SKU
-            { wch: 40 }, // Title
-            { wch: 10 }, // Quantity
-            { wch: 12 }, // Condition
-            { wch: 50 }, // Description
-            { wch: 20 }  // Location
-        ];
-
-        XLSX.utils.book_append_sheet(workbook, worksheet, 'eBay Inventory');
-
-        // Generate buffer
-        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename=ebay_inventory_${new Date().toISOString().split('T')[0]}.xlsx`);
-        res.send(buffer);
-
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
 // Full database export (JSON with all nested data)
 app.get('/api/export/full', async (req, res) => {
     try {
@@ -3228,9 +3138,6 @@ app.post('/api/ebay/publish-all/:accountId', async (req, res) => {
 // Main app
 app.get('/app', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'app.html')); });
 
-// Debug page
-app.get('/debug', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'debug.html')); });
-
 // Admin routes
 app.get('/admin', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'admin.html')); });
 app.post('/api/admin/login', (req, res) => {
@@ -3343,6 +3250,17 @@ app.get('/api/keep-alive', async (req, res) => {
     } catch (err) {
         res.status(500).json({ status: 'error', error: err.message });
     }
+});
+
+// ============================================
+// GLOBAL ERROR HANDLER — must be last app.use()
+// ============================================
+app.use((err, req, res, next) => {
+    const status = err.status || 500;
+    const body = { error: err.message || 'Internal error' };
+    if (err.details) body.details = err.details;
+    if (status >= 500) console.error(`[${req.method} ${req.path}]`, err);
+    res.status(status).json(body);
 });
 
 // ============================================
