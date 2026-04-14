@@ -1764,6 +1764,15 @@ const ebayAPI = {
                 const snapshot = fullItem.ebaySync?.snapshot;
 
                 if (!ebayItem) {
+                    // Guard: if item has ebayItemId pointing to another account, skip — no duplicate
+                    if (fullItem.ebaySync?.ebayItemId) {
+                        results.skipped.push({
+                            sku: fullItem.sku,
+                            reason: `Already listed on another eBay account (ID ${fullItem.ebaySync.ebayItemId}). Use Transfer to move it.`
+                        });
+                        continue;
+                    }
+
                     // Item not on eBay - create it
                     await this.syncItemToEbay(accountId, {
                         SKU: fullItem.sku,
@@ -2042,6 +2051,16 @@ const ebayAPI = {
             try {
                 const fullItem = await data.getItem(item.sku);
                 if (!fullItem) continue;
+
+                // Guard: if item already has ebayItemId pointing to a different account's listing,
+                // don't create a duplicate on this account. Transfer feature will handle moves explicitly.
+                if (fullItem.ebaySync?.ebayItemId) {
+                    results.skipped.push({
+                        sku: fullItem.sku,
+                        reason: `Already listed on another eBay account (ID ${fullItem.ebaySync.ebayItemId}). Use Transfer to move it.`
+                    });
+                    continue;
+                }
 
                 await this.syncItemToEbay(accountId, {
                     SKU: fullItem.sku,
