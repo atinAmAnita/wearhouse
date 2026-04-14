@@ -1313,9 +1313,29 @@ const eBay = {
                         ${acc.lastSync ? 'Last sync: ' + UI.formatDateTime(acc.lastSync) : 'Never synced'}
                     </p>
                 </div>
-                ${!acc.hasValidToken ? `<a href="/admin" style="color: var(--danger); font-size: 0.85rem; text-decoration: underline;">Reconnect</a>` : ''}
+                <div style="display:flex; align-items:center; gap:15px;">
+                    <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none; font-size:0.85rem; color:var(--text-muted);" title="Auto-sync every 15 min via cron. Turn off if you don't want this account to sync automatically.">
+                        <input type="checkbox" ${acc.cronEnabled !== false ? 'checked' : ''} onchange="eBay.toggleCron('${acc.id}', this.checked)" style="width:16px;height:16px;cursor:pointer;" ${!acc.hasValidToken ? 'disabled' : ''}>
+                        Auto-sync
+                    </label>
+                    ${!acc.hasValidToken ? `<a href="/admin" style="color: var(--danger); font-size: 0.85rem; text-decoration: underline;">Reconnect</a>` : ''}
+                </div>
             </div>
         `).join(''));
+    },
+
+    async toggleCron(accountId, enabled) {
+        try {
+            await API.put(`/api/ebay/accounts/${accountId}/cron`, { enabled });
+            UI.notify(`Auto-sync ${enabled ? 'enabled' : 'disabled'}`, 'success');
+            // Update local state so subsequent renders show the new value
+            const acc = State.ebayAccounts.find(a => a.id === accountId);
+            if (acc) acc.cronEnabled = enabled;
+        } catch (err) {
+            UI.notify('Failed to toggle auto-sync: ' + err.message, 'error');
+            // Reload to revert the checkbox visual
+            eBay.loadStatus();
+        }
     },
 
     getSelectedAccount() {

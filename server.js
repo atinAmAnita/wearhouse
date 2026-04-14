@@ -2723,6 +2723,24 @@ app.post('/api/import/full', async (req, res) => {
 
 // eBay API routes
 app.get('/api/ebay/status', async (req, res) => { res.json(await ebayAPI.getStatus()); });
+
+// Toggle cron auto-sync for a single account
+app.put('/api/ebay/accounts/:accountId/cron', ah(async (req, res) => {
+    const { accountId } = req.params;
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') throw new HttpError(400, 'Field "enabled" must be a boolean');
+
+    if (!USE_LOCAL_DB) {
+        const acct = await db.ebayAccounts.get(accountId);
+        if (!acct) throw new HttpError(404, 'Account not found');
+        await db.ebayAccounts.save(accountId, { cronEnabled: enabled });
+    } else {
+        if (!localAccounts[accountId]) throw new HttpError(404, 'Account not found');
+        localAccounts[accountId].cronEnabled = enabled;
+        saveLocalData();
+    }
+    res.json({ message: `Auto-sync ${enabled ? 'enabled' : 'disabled'}`, accountId, cronEnabled: enabled });
+}));
 app.get('/api/ebay/accounts', async (req, res) => { res.json(await data.getAllAccounts()); });
 
 app.get('/api/ebay/callback', async (req, res) => {
