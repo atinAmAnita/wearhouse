@@ -1779,11 +1779,13 @@ const ebayAPI = {
                             await this.rebasePendingUpdatesForSku(sku, ebayItem, 0);
                         }
 
-                        // Update local item
+                        // Update local item — preserve existing ebaySync fields
                         updates.ebaySync = {
+                            ...(localItem.ebaySync || {}),
                             snapshot: this.captureEbaySnapshot(ebayItem),
                             lastSyncTime: new Date(),
                             ebayItemId: ebayItem.itemId,
+                            ebayAccountId: accountId,
                             status: 'synced'
                         };
                         updates.lastSyncedQty = parseInt(ebayItem.quantity) || localItem.currentQty;
@@ -1917,14 +1919,16 @@ const ebayAPI = {
                     ItemSpecifics: fullItem.itemSpecifics || {}
                 });
 
-                // Update local with new snapshot
+                // Update local with new snapshot — preserve existing ebaySync fields
                 await data.updateItem(sku, {
                     currentQty: finalQty,
                     lastSyncedQty: finalQty,
                     ebaySync: {
+                        ...(fullItem.ebaySync || {}),
                         snapshot: this.captureLocalSnapshot({ ...fullItem, currentQty: finalQty }),
                         lastSyncTime: new Date(),
                         ebayItemId: ebayItem.itemId,
+                        ebayAccountId: accountId,
                         status: 'synced'
                     }
                 });
@@ -1995,8 +1999,10 @@ const ebayAPI = {
                 await data.updateItem(fullItem.sku, {
                     lastSyncedQty: fullItem.currentQty,
                     ebaySync: {
+                        ...(fullItem.ebaySync || {}),
                         snapshot: this.captureLocalSnapshot(fullItem),
                         lastSyncTime: new Date(),
+                        ebayAccountId: accountId,
                         status: 'synced'
                     }
                 });
@@ -3164,10 +3170,12 @@ app.post('/api/ebay/publish/:accountId/:sku', async (req, res) => {
             CategoryId: item.categoryId, ImageUrl: item.imageUrl || null, ItemSpecifics: item.itemSpecifics || {}
         });
 
-        // Save eBay item ID
+        // Save eBay item ID — preserve existing ebaySync fields
         await data.updateItem(item.sku, {
             ebaySync: {
+                ...(item.ebaySync || {}),
                 ebayItemId: result.itemId || null,
+                ebayAccountId: req.params.accountId,
                 snapshot: ebayAPI.captureLocalSnapshot(item),
                 lastSyncTime: new Date(),
                 status: 'synced'
@@ -3205,7 +3213,9 @@ app.post('/api/ebay/publish-all/:accountId', ah(async (req, res) => {
                 });
                 await data.updateItem(fullItem.sku, {
                     ebaySync: {
+                        ...(fullItem.ebaySync || {}),
                         ebayItemId: result.itemId || null,
+                        ebayAccountId: accountId,
                         snapshot: ebayAPI.captureLocalSnapshot(fullItem),
                         lastSyncTime: new Date(),
                         status: 'synced'
