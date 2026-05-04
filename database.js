@@ -60,6 +60,7 @@ const inventoryItemSchema = new mongoose.Schema({
         },
         lastSyncTime: Date,
         ebayItemId: String,
+        ebayAccountId: String,  // Which eBay account this listing belongs to
         ebayOfferId: String,
         status: { type: String, default: 'not_synced' }  // 'synced' | 'pending' | 'error' | 'not_synced'
     },

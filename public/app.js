@@ -652,6 +652,14 @@ const Inventory = {
             });
         }
 
+        // Apply account filter (client-side)
+        const accountFilter = UI.el('accountFilter')?.value || 'all';
+        if (accountFilter === 'none') {
+            items = items.filter(i => !i.EbayAccountId);
+        } else if (accountFilter !== 'all') {
+            items = items.filter(i => i.EbayAccountId === accountFilter);
+        }
+
         // Apply sorting
         items.sort((a, b) => {
             let aVal, bVal;
@@ -1291,6 +1299,16 @@ const eBay = {
                     ${acc.name} ${!acc.hasValidToken ? '(Token Expired)' : ''}
                 </option>`
             ).join('');
+
+        // Inventory account filter — preserve its selection too
+        const accountFilter = UI.el('accountFilter');
+        if (accountFilter) {
+            const prevFilter = accountFilter.value || 'all';
+            accountFilter.innerHTML = '<option value="all">All Accounts</option>'
+                + '<option value="none">Not on eBay</option>'
+                + State.ebayAccounts.map(acc => `<option value="${acc.id}">${acc.name}</option>`).join('');
+            if ([...accountFilter.options].some(o => o.value === prevFilter)) accountFilter.value = prevFilter;
+        }
         // Restore previous selection if still valid, otherwise auto-select if only one
         if (previousSelection && [...select.options].some(o => o.value === previousSelection && !o.disabled)) {
             select.value = previousSelection;

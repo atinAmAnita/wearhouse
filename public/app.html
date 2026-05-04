@@ -158,6 +158,9 @@
                     <option value="needs-sku">Needs SKU</option>
                     <option value="ebay-imports">eBay Imports</option>
                 </select>
+                <select id="accountFilter" class="styled-select" onchange="Inventory.applyFilter()">
+                    <option value="all">All Accounts</option>
+                </select>
                 <button class="btn btn-secondary" onclick="Inventory.load()">Refresh</button>
             </div>
             <div class="table-container">

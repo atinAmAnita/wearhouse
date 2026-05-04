@@ -313,6 +313,7 @@ function formatItem(item) {
         LastModified: item.lastModified,
         Staged: item.staged || false,
         EbayItemId: item.ebaySync?.ebayItemId || null,
+        EbayAccountId: item.ebaySync?.ebayAccountId || null,
         EbayStatus: item.ebaySync?.status || 'not_synced',
         LowStockThreshold: item.lowStockThreshold ?? null
     };
@@ -1538,7 +1539,7 @@ const ebayAPI = {
     },
 
     // Create a local inventory item from eBay data
-    createLocalItemFromEbay(ebayItem) {
+    createLocalItemFromEbay(ebayItem, accountId = null) {
         // Generate SKU from eBay item ID if no SKU
         const sku = ebayItem.sku || ebayItem.itemId;
 
@@ -1566,6 +1567,7 @@ const ebayAPI = {
                 snapshot: this.captureEbaySnapshot(ebayItem),
                 lastSyncTime: new Date(),
                 ebayItemId: ebayItem.itemId || null,
+                ebayAccountId: accountId || null,
                 status: 'synced'
             },
             history: [{
@@ -1624,7 +1626,7 @@ const ebayAPI = {
 
                 if (!localItem) {
                     // Item exists on eBay but not locally - CREATE
-                    const newItem = this.createLocalItemFromEbay(ebayItem);
+                    const newItem = this.createLocalItemFromEbay(ebayItem, accountId);
                     await data.createItem(newItem);
                     results.created.push({ sku, title: ebayItem.title, source: 'ebay' });
                 } else {
@@ -1635,10 +1637,13 @@ const ebayAPI = {
 
                     const ebayChanges = this.detectEbayChanges(ebayItem, snapshot);
 
-                    // Backfill missing imageUrl opportunistically
-                    if (ebayItem.pictureUrl && !localItem.imageUrl) {
-                        await data.updateItem(sku, { imageUrl: ebayItem.pictureUrl });
+                    // Backfill missing imageUrl + ebayAccountId opportunistically
+                    const backfill = {};
+                    if (ebayItem.pictureUrl && !localItem.imageUrl) backfill.imageUrl = ebayItem.pictureUrl;
+                    if (!localItem.ebaySync?.ebayAccountId) {
+                        backfill.ebaySync = { ...(localItem.ebaySync || {}), ebayAccountId: accountId, ebayItemId: ebayItem.itemId };
                     }
+                    if (Object.keys(backfill).length > 0) await data.updateItem(sku, backfill);
 
                     if (ebayChanges.length === 0) {
                         results.skipped.push({ sku, reason: 'No eBay changes' });
@@ -1960,10 +1965,13 @@ const ebayAPI = {
                 const fullItem = await data.getItem(sku);
                 if (!fullItem) continue;
 
-                // Backfill missing imageUrl opportunistically
-                if (ebayItem.pictureUrl && !fullItem.imageUrl) {
-                    await data.updateItem(sku, { imageUrl: ebayItem.pictureUrl });
+                // Backfill missing imageUrl + ebayAccountId opportunistically
+                const _bf = {};
+                if (ebayItem.pictureUrl && !fullItem.imageUrl) _bf.imageUrl = ebayItem.pictureUrl;
+                if (!fullItem.ebaySync?.ebayAccountId) {
+                    _bf.ebaySync = { ...(fullItem.ebaySync || {}), ebayAccountId: accountId, ebayItemId: ebayItem.itemId };
                 }
+                if (Object.keys(_bf).length > 0) await data.updateItem(sku, _bf);
 
                 const snapshot = fullItem.ebaySync?.snapshot;
                 const lastSyncTime = fullItem.ebaySync?.lastSyncTime;
@@ -2043,15 +2051,18 @@ const ebayAPI = {
                 // Check if item already exists locally by eBay ItemID (in case SKU was changed)
                 const existingByEbayId = ebayItem.itemId ? await data.getItemByEbayId(ebayItem.itemId) : null;
                 if (existingByEbayId) {
-                    // Backfill missing imageUrl for items matched by eBay ID
-                    if (ebayItem.pictureUrl && !existingByEbayId.imageUrl) {
-                        await data.updateItem(existingByEbayId.sku, { imageUrl: ebayItem.pictureUrl });
+                    // Backfill missing imageUrl + tag accountId for items matched by eBay ID
+                    const patch = {};
+                    if (ebayItem.pictureUrl && !existingByEbayId.imageUrl) patch.imageUrl = ebayItem.pictureUrl;
+                    if (!existingByEbayId.ebaySync?.ebayAccountId) {
+                        patch.ebaySync = { ...(existingByEbayId.ebaySync || {}), ebayAccountId: accountId, ebayItemId: ebayItem.itemId };
                     }
+                    if (Object.keys(patch).length > 0) await data.updateItem(existingByEbayId.sku, patch);
                     results.skipped.push({ sku, reason: 'Already exists (matched by eBay ItemID)' });
                     continue;
                 }
 
-                const newItem = this.createLocalItemFromEbay(ebayItem);
+                const newItem = this.createLocalItemFromEbay(ebayItem, accountId);
                 await data.createItem(newItem);
                 results.imported.push({ sku, title: ebayItem.title });
             } catch (err) {
