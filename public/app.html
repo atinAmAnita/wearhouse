@@ -117,6 +117,37 @@
 
                 <div class="barcode-container">
                     <img id="lookupBarcodeImage" alt="Barcode">
+                    <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                        <button class="btn btn-secondary" onclick="LabelPrint.print()">Print Label</button>
+                        <button class="btn btn-sm" style="background:#444;color:#ddd;" onclick="LabelPrint.toggleSettings()">⚙ Settings</button>
+                    </div>
+                    <div id="labelPrintSettings" style="display:none; margin-top:12px; padding:12px; background:var(--bg-input,#1a1a1a); border:1px solid #333; border-radius:6px; max-width:520px; text-align:left;">
+                        <h4 style="margin:0 0 10px 0; color:#94a3b8; font-size:0.85rem; letter-spacing:1px; text-transform:uppercase;">Label Print Settings</h4>
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; font-size:0.85rem;">
+                            <label style="display:flex; flex-direction:column; gap:4px;">
+                                <span style="color:#94a3b8;">Width (mm)</span>
+                                <input type="number" id="labelWidth" min="20" max="200" step="1" value="50" style="padding:6px; background:#222; border:1px solid #444; color:#ddd; border-radius:4px;">
+                            </label>
+                            <label style="display:flex; flex-direction:column; gap:4px;">
+                                <span style="color:#94a3b8;">Height (mm)</span>
+                                <input type="number" id="labelHeight" min="10" max="200" step="1" value="30" style="padding:6px; background:#222; border:1px solid #444; color:#ddd; border-radius:4px;">
+                            </label>
+                            <label style="display:flex; flex-direction:column; gap:4px;">
+                                <span style="color:#94a3b8;">Scale (%)</span>
+                                <input type="number" id="labelScale" min="50" max="200" step="5" value="100" style="padding:6px; background:#222; border:1px solid #444; color:#ddd; border-radius:4px;">
+                            </label>
+                            <label style="display:flex; flex-direction:column; gap:4px;">
+                                <span style="color:#94a3b8;">H offset (mm)</span>
+                                <input type="number" id="labelOffsetX" min="-20" max="20" step="0.5" value="0" style="padding:6px; background:#222; border:1px solid #444; color:#ddd; border-radius:4px;">
+                            </label>
+                            <label style="display:flex; flex-direction:column; gap:4px;">
+                                <span style="color:#94a3b8;">V offset (mm)</span>
+                                <input type="number" id="labelOffsetY" min="-20" max="20" step="0.5" value="0" style="padding:6px; background:#222; border:1px solid #444; color:#ddd; border-radius:4px;">
+                            </label>
+                            <div></div>
+                        </div>
+                        <p style="color:#6b7280; font-size:0.75rem; margin:10px 0 0;">Saved in your browser. Adjust if printer alignment is off. Label content: barcode + SKU.</p>
+                    </div>
                 </div>
 
                 <div class="action-buttons">

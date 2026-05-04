@@ -2254,6 +2254,127 @@ const exportEbayToExcel = () => {
     window.location.href = `/api/debug/ebay-export/${accountId}`;
 };
 const printBarcode = () => window.print();
+
+// ============================================
+// LABEL PRINT — barcode + SKU only, opens dedicated print window
+// ============================================
+const LabelPrint = {
+    SETTINGS_KEY: 'labelPrintSettings',
+
+    defaults: { width: 50, height: 30, scale: 100, offsetX: 0, offsetY: 0 },
+
+    load() {
+        try { return { ...this.defaults, ...(JSON.parse(localStorage.getItem(this.SETTINGS_KEY) || '{}')) }; }
+        catch { return { ...this.defaults }; }
+    },
+
+    save(settings) {
+        localStorage.setItem(this.SETTINGS_KEY, JSON.stringify(settings));
+    },
+
+    readFromUI() {
+        const get = (id, fallback) => {
+            const el = UI.el(id);
+            const v = parseFloat(el?.value);
+            return Number.isFinite(v) ? v : fallback;
+        };
+        return {
+            width: get('labelWidth', this.defaults.width),
+            height: get('labelHeight', this.defaults.height),
+            scale: get('labelScale', this.defaults.scale),
+            offsetX: get('labelOffsetX', this.defaults.offsetX),
+            offsetY: get('labelOffsetY', this.defaults.offsetY)
+        };
+    },
+
+    populateUI() {
+        const s = this.load();
+        const set = (id, v) => { const el = UI.el(id); if (el) el.value = v; };
+        set('labelWidth', s.width);
+        set('labelHeight', s.height);
+        set('labelScale', s.scale);
+        set('labelOffsetX', s.offsetX);
+        set('labelOffsetY', s.offsetY);
+    },
+
+    toggleSettings() {
+        const panel = UI.el('labelPrintSettings');
+        if (!panel) return;
+        const isOpen = panel.style.display !== 'none';
+        if (!isOpen) this.populateUI();
+        panel.style.display = isOpen ? 'none' : 'block';
+    },
+
+    print() {
+        if (!State.currentItem) {
+            UI.notify('No item selected', 'error');
+            return;
+        }
+        const sku = State.currentItem.SKU;
+        const barcodeImg = UI.el('lookupBarcodeImage');
+        const barcodeSrc = barcodeImg?.src;
+        if (!barcodeSrc) {
+            UI.notify('Barcode not available — try lookup again', 'error');
+            return;
+        }
+
+        // Pull live settings from UI if open, otherwise use saved
+        const settingsPanelOpen = UI.el('labelPrintSettings')?.style.display !== 'none';
+        const settings = settingsPanelOpen ? this.readFromUI() : this.load();
+        if (settingsPanelOpen) this.save(settings);
+
+        const w = Math.max(20, Math.min(300, settings.width));
+        const h = Math.max(10, Math.min(300, settings.height));
+        const scale = Math.max(50, Math.min(200, settings.scale)) / 100;
+        const ox = Math.max(-50, Math.min(50, settings.offsetX));
+        const oy = Math.max(-50, Math.min(50, settings.offsetY));
+
+        const html = `<!DOCTYPE html>
+<html>
+<head>
+<title>Label ${sku}</title>
+<style>
+    @page { size: ${w}mm ${h}mm; margin: 0; }
+    html, body { margin: 0; padding: 0; }
+    body { width: ${w}mm; height: ${h}mm; }
+    .label {
+        width: ${w}mm; height: ${h}mm;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        box-sizing: border-box; padding: 1mm;
+        transform: scale(${scale}) translate(${ox}mm, ${oy}mm);
+        transform-origin: center center;
+    }
+    .label img { max-width: 100%; max-height: 70%; object-fit: contain; }
+    .label .sku {
+        font-family: monospace; font-size: ${Math.max(8, h * 0.18)}pt;
+        font-weight: bold; margin-top: 1mm; letter-spacing: 1px;
+    }
+    @media print { body { width: ${w}mm; height: ${h}mm; } }
+</style>
+</head>
+<body>
+    <div class="label">
+        <img src="${barcodeSrc}" alt="${sku}">
+        <div class="sku">${sku}</div>
+    </div>
+    <script>
+        window.addEventListener('load', () => {
+            setTimeout(() => { window.print(); setTimeout(() => window.close(), 200); }, 100);
+        });
+    <\/script>
+</body>
+</html>`;
+
+        const win = window.open('', '_blank', 'width=400,height=300');
+        if (!win) {
+            UI.notify('Pop-ups blocked — allow pop-ups to print', 'error');
+            return;
+        }
+        win.document.write(html);
+        win.document.close();
+    }
+};
 const getAdjustQty = () => parseInt(UI.el('adjustQtyInput')?.value) || 1;
 
 // Full backup import
