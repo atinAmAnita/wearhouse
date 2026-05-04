@@ -93,6 +93,16 @@ const data = {
         return Object.values(localInventory.items).map(formatItem);
     },
 
+    // Raw schema-shape items — for internal sync/diff logic that reads
+    // lowercase fields like item.sku, item.ebaySync, item.imageUrl, etc.
+    // formatItem renames these for the API; never call this from a route handler.
+    async getAllItemsRaw() {
+        if (!USE_LOCAL_DB) {
+            return db.inventory.getAll();
+        }
+        return Object.values(localInventory.items);
+    },
+
     async getItem(sku) {
         if (!USE_LOCAL_DB) {
             return db.inventory.getItem(sku);
@@ -1822,8 +1832,8 @@ const ebayAPI = {
             });
         }
 
-        // 2. Get all local items
-        const localItems = await data.getAllItems();
+        // 2. Get all local items (raw schema — internal sync logic reads lowercase fields)
+        const localItems = await data.getAllItemsRaw();
         const localMap = {};
         localItems.forEach(item => { localMap[item.sku] = item; });
 
@@ -2795,111 +2805,6 @@ app.post('/api/cron/sync-all-accounts', ah(async (req, res) => {
     res.json({ ranAt: new Date().toISOString(), results });
 }));
 
-// Compare local inventory with eBay listings - find differences
-app.get('/api/ebay/compare/:accountId', async (req, res) => {
-    try {
-        if (!(await ebayAPI.isAccountAuthenticated(req.params.accountId))) {
-            return res.status(401).json({ error: 'eBay account not connected' });
-        }
-
-        const differences = [];
-        const localOnly = [];
-        const ebayOnly = [];
-
-        // Get all local items
-        const localItems = await data.getAllItems();
-        const localMap = new Map();
-        localItems.forEach(item => {
-            localMap.set(item.sku, item);
-        });
-
-        // Get eBay listings
-        const ebayData = await ebayAPI.getActiveListings(req.params.accountId);
-        if (ebayData.error) {
-            throw new Error(ebayData.error);
-        }
-
-        const ebayMap = new Map();
-        (ebayData.items || []).forEach(item => {
-            const sku = item.sku || item.itemId;
-            ebayMap.set(sku, item);
-        });
-
-        // Compare items that exist in both
-        for (const [sku, localItem] of localMap) {
-            const ebayItem = ebayMap.get(sku);
-
-            if (!ebayItem) {
-                // Item exists locally but not on eBay
-                localOnly.push({
-                    sku,
-                    title: localItem.description || localItem.itemCode,
-                    localPrice: localItem.price || 0,
-                    localQty: localItem.currentQty || 0,
-                    location: localItem.fullLocation
-                });
-            } else {
-                // Compare price and quantity
-                const localPrice = parseFloat(localItem.price) || 0;
-                const ebayPrice = parseFloat(ebayItem.price) || 0;
-                const localQty = parseInt(localItem.currentQty) || 0;
-                const ebayQty = parseInt(ebayItem.quantity) || 0;
-
-                const priceDiff = Math.abs(localPrice - ebayPrice) > 0.01;
-                const qtyDiff = localQty !== ebayQty;
-
-                if (priceDiff || qtyDiff) {
-                    differences.push({
-                        sku,
-                        title: ebayItem.title || localItem.description,
-                        ebayItemId: ebayItem.itemId,
-                        local: {
-                            price: localPrice,
-                            quantity: localQty
-                        },
-                        ebay: {
-                            price: ebayPrice,
-                            quantity: ebayQty
-                        },
-                        priceDiff,
-                        qtyDiff
-                    });
-                }
-            }
-        }
-
-        // Find items on eBay but not in local
-        for (const [sku, ebayItem] of ebayMap) {
-            if (!localMap.has(sku)) {
-                ebayOnly.push({
-                    sku,
-                    ebayItemId: ebayItem.itemId,
-                    title: ebayItem.title,
-                    ebayPrice: parseFloat(ebayItem.price) || 0,
-                    ebayQty: parseInt(ebayItem.quantity) || 0
-                });
-            }
-        }
-
-        res.json({
-            summary: {
-                totalLocal: localItems.length,
-                totalEbay: ebayData.items?.length || 0,
-                differences: differences.length,
-                localOnly: localOnly.length,
-                ebayOnly: ebayOnly.length
-            },
-            differences,
-            localOnly,
-            ebayOnly
-        });
-
-    } catch (err) {
-        console.error('Compare error:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
 // Upload image to eBay and return hosted URL
 app.post('/api/ebay/upload-image/:accountId', upload.single('image'), async (req, res) => {
     try {
@@ -2953,8 +2858,8 @@ app.post('/api/ebay/compare-and-queue/:accountId', ah(async (req, res) => {
         const skipSkus = req.body.skipSkus || []; // SKUs user chose to skip (conflicts)
         const forceSkus = req.body.forceSkus || []; // SKUs user chose to overwrite
 
-        // Get all local items
-        const localItems = await data.getAllItems();
+        // Get all local items (raw schema — diff logic reads lowercase fields)
+        const localItems = await data.getAllItemsRaw();
         const localMap = new Map();
         localItems.forEach(item => localMap.set(item.sku, item));
 
@@ -3332,7 +3237,7 @@ app.post('/api/admin/debug', ah(async (req, res) => {
     if (req.body.password !== config.adminPassword) throw new HttpError(401, 'Invalid password');
 
     const accounts = await data.getAllAccounts();
-    const allItems = await data.getAllItems();
+    const allItems = await data.getAllItemsRaw();
     const allPending = await data.getPendingUpdates('pending');
 
     // Per-account breakdown
