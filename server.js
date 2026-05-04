@@ -3325,6 +3325,68 @@ app.get('/app', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'app
 
 // Admin routes
 app.get('/admin', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'admin.html')); });
+app.get('/debug', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'debug.html')); });
+
+// Read-only debug snapshot — admin-password gated, no mutations
+app.post('/api/admin/debug', ah(async (req, res) => {
+    if (req.body.password !== config.adminPassword) throw new HttpError(401, 'Invalid password');
+
+    const accounts = await data.getAllAccounts();
+    const allItems = await data.getAllItems();
+    const allPending = await data.getPendingUpdates('pending');
+
+    // Per-account breakdown
+    const accountStats = [];
+    for (const acc of accounts) {
+        let ebayCount = null;
+        let ebayErr = null;
+        if (acc.hasValidToken) {
+            try {
+                const ebayData = await ebayAPI.getActiveListings(acc.id);
+                ebayCount = ebayData.totalEntries ?? ebayData.items?.length ?? 0;
+            } catch (err) { ebayErr = err.message; }
+        }
+        const localItemsForAcc = allItems.filter(i => i.ebaySync?.ebayAccountId === acc.id);
+        accountStats.push({
+            id: acc.id,
+            name: acc.name,
+            hasValidToken: acc.hasValidToken,
+            cronEnabled: acc.cronEnabled !== false,
+            lastSync: acc.lastSync,
+            ebayListingsCount: ebayCount,
+            ebayFetchError: ebayErr,
+            localItemsTagged: localItemsForAcc.length
+        });
+    }
+
+    // Global stats
+    const itemsByStatus = {
+        synced: allItems.filter(i => i.ebaySync?.ebayItemId).length,
+        notSynced: allItems.filter(i => !i.ebaySync?.ebayItemId).length,
+        staged: allItems.filter(i => i.staged).length,
+        withImage: allItems.filter(i => i.imageUrl).length,
+        withoutImage: allItems.filter(i => !i.imageUrl).length,
+        defaultLocation: allItems.filter(i => i.fullLocation === '000-00').length
+    };
+
+    // Pending update breakdown
+    const pendingByType = {};
+    for (const u of allPending) {
+        pendingByType[u.updateType] = (pendingByType[u.updateType] || 0) + 1;
+    }
+
+    res.json({
+        snapshotAt: new Date().toISOString(),
+        accounts: accountStats,
+        items: { total: allItems.length, ...itemsByStatus },
+        pendingUpdates: { total: allPending.length, byType: pendingByType },
+        env: {
+            mode: USE_LOCAL_DB ? 'local' : 'mongodb',
+            ebayEnvironment: config.ebay.environment,
+            cronSecretConfigured: !!process.env.CRON_SECRET
+        }
+    });
+}));
 app.post('/api/admin/login', (req, res) => {
     if (req.body.password === config.adminPassword) {
         res.json({ success: true });

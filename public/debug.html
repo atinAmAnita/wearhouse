@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>STOCKFORGE Debug</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d0d0d; color: #ddd; margin: 0; padding: 20px; }
+        h1 { color: #f97316; margin: 0 0 20px; }
+        h2 { color: #94a3b8; font-size: 1rem; text-transform: uppercase; letter-spacing: 1px; margin: 30px 0 10px; }
+        .login-box { max-width: 400px; margin: 100px auto; background: #1a1a1a; padding: 30px; border-radius: 8px; border: 1px solid #333; }
+        .login-box input { width: 100%; padding: 10px; margin-top: 10px; background: #2a2a2a; border: 1px solid #444; color: #ddd; border-radius: 4px; box-sizing: border-box; }
+        .login-box button { width: 100%; padding: 10px; margin-top: 15px; background: #f97316; color: #000; border: 0; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .panel { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+        .stat { background: #222; padding: 15px; border-radius: 6px; }
+        .stat .label { color: #6b7280; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat .value { color: #f1f5f9; font-size: 1.5rem; font-weight: bold; margin-top: 4px; }
+        .account-card { background: #222; padding: 15px; border-radius: 6px; margin-bottom: 10px; }
+        .account-card .name { color: #f97316; font-size: 1.1rem; font-weight: bold; }
+        .account-card .meta { color: #6b7280; font-size: 0.85rem; margin: 4px 0; }
+        .account-card .row { display: flex; justify-content: space-between; padding: 4px 0; border-top: 1px solid #333; margin-top: 8px; padding-top: 8px; }
+        .badge { display: inline-block; padding: 2px 8px; font-size: 0.75rem; border-radius: 4px; margin-left: 8px; }
+        .badge-ok { background: #14532d; color: #4ade80; }
+        .badge-err { background: #7f1d1d; color: #fca5a5; }
+        .badge-warn { background: #78350f; color: #fbbf24; }
+        button { background: #2563eb; color: #fff; border: 0; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #1d4ed8; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .err { color: #fca5a5; font-size: 0.85rem; margin-top: 4px; }
+        a.back { color: #6b7280; text-decoration: none; font-size: 0.85rem; }
+        a.back:hover { color: #ddd; }
+        pre { background: #0a0a0a; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+    <a href="/app" class="back">&larr; Back to app</a>
+    <h1>STOCKFORGE — Debug</h1>
+
+    <div id="loginBox" class="login-box">
+        <h2 style="margin: 0; color: #f97316;">Admin Password</h2>
+        <p style="color: #6b7280; font-size: 0.85rem;">This page shows account status and counts. Read-only.</p>
+        <input type="password" id="passwordInput" placeholder="Password" onkeydown="if(event.key==='Enter') load()">
+        <button onclick="load()">View Debug Snapshot</button>
+        <p id="loginErr" class="err" style="display: none;"></p>
+    </div>
+
+    <div id="content" style="display: none;">
+        <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
+            <button onclick="load()" id="refreshBtn">Refresh</button>
+            <span id="snapshotAt" style="color: #6b7280; font-size: 0.85rem;"></span>
+        </div>
+
+        <h2>Environment</h2>
+        <div class="panel">
+            <div class="grid" id="envStats"></div>
+        </div>
+
+        <h2>Accounts</h2>
+        <div id="accountsPanel" class="panel"></div>
+
+        <h2>Items</h2>
+        <div class="panel">
+            <div class="grid" id="itemStats"></div>
+        </div>
+
+        <h2>Pending Updates</h2>
+        <div class="panel">
+            <div class="grid" id="pendingStats"></div>
+        </div>
+    </div>
+
+    <script>
+        let savedPassword = '';
+
+        async function load() {
+            const pwInput = document.getElementById('passwordInput');
+            const password = savedPassword || pwInput.value;
+            if (!password) return;
+
+            const refreshBtn = document.getElementById('refreshBtn');
+            if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = 'Loading...'; }
+
+            try {
+                const resp = await fetch('/api/admin/debug', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password })
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.error || 'Failed');
+
+                savedPassword = password;
+                document.getElementById('loginBox').style.display = 'none';
+                document.getElementById('content').style.display = 'block';
+                render(data);
+            } catch (err) {
+                const errEl = document.getElementById('loginErr');
+                errEl.textContent = err.message;
+                errEl.style.display = 'block';
+            } finally {
+                if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = 'Refresh'; }
+            }
+        }
+
+        function stat(label, value) {
+            return `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+        }
+
+        function render(data) {
+            document.getElementById('snapshotAt').textContent = `Snapshot: ${new Date(data.snapshotAt).toLocaleString()}`;
+
+            // Env
+            document.getElementById('envStats').innerHTML = [
+                stat('Database', data.env.mode),
+                stat('eBay environment', data.env.ebayEnvironment),
+                stat('CRON_SECRET set', data.env.cronSecretConfigured ? 'Yes' : 'No')
+            ].join('');
+
+            // Accounts
+            document.getElementById('accountsPanel').innerHTML = data.accounts.map(a => {
+                const tokenBadge = a.hasValidToken
+                    ? '<span class="badge badge-ok">Token OK</span>'
+                    : '<span class="badge badge-err">Token expired</span>';
+                const cronBadge = a.cronEnabled
+                    ? '<span class="badge badge-ok">Cron on</span>'
+                    : '<span class="badge badge-warn">Cron off</span>';
+                const errLine = a.ebayFetchError
+                    ? `<div class="err">eBay fetch error: ${a.ebayFetchError}</div>`
+                    : '';
+                return `
+                    <div class="account-card">
+                        <div class="name">${a.name} ${tokenBadge} ${cronBadge}</div>
+                        <div class="meta">ID: ${a.id}</div>
+                        <div class="meta">Last sync: ${a.lastSync ? new Date(a.lastSync).toLocaleString() : 'Never'}</div>
+                        <div class="row"><span>eBay listings (live)</span><strong>${a.ebayListingsCount ?? 'n/a'}</strong></div>
+                        <div class="row"><span>Local items tagged to this account</span><strong>${a.localItemsTagged}</strong></div>
+                        ${errLine}
+                    </div>
+                `;
+            }).join('') || '<p style="color: #6b7280;">No accounts connected.</p>';
+
+            // Items
+            document.getElementById('itemStats').innerHTML = [
+                stat('Total local items', data.items.total),
+                stat('Synced to eBay', data.items.synced),
+                stat('Not on eBay', data.items.notSynced),
+                stat('Staged (pending CREATE)', data.items.staged),
+                stat('With image', data.items.withImage),
+                stat('Without image', data.items.withoutImage),
+                stat('Default location (000-00)', data.items.defaultLocation)
+            ].join('');
+
+            // Pending
+            const byType = data.pendingUpdates.byType || {};
+            document.getElementById('pendingStats').innerHTML = [
+                stat('Total pending', data.pendingUpdates.total),
+                ...Object.entries(byType).map(([t, n]) => stat(t, n))
+            ].join('') || '<p style="color: #6b7280;">No pending updates.</p>';
+        }
+    </script>
+</body>
+</html>
