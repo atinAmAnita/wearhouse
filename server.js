@@ -1164,7 +1164,15 @@ const ebayAPI = {
             ? 'https://api.ebay.com/ws/api.dll'
             : 'https://api.sandbox.ebay.com/ws/api.dll';
 
-        const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
+        const ENTRIES_PER_PAGE = 200;
+        const MAX_PAGES = 50; // safety cap = 10,000 listings
+        const items = [];
+        let totalEntries = 0;
+        let lastError = null;
+        let pageNumber = 1;
+
+        while (pageNumber <= MAX_PAGES) {
+            const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
 <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
     <RequesterCredentials>
         <eBayAuthToken>${token}</eBayAuthToken>
@@ -1174,12 +1182,12 @@ const ebayAPI = {
         <Include>true</Include>
         <ListingType>FixedPriceItem</ListingType>
         <Pagination>
-            <EntriesPerPage>200</EntriesPerPage>
-            <PageNumber>1</PageNumber>
+            <EntriesPerPage>${ENTRIES_PER_PAGE}</EntriesPerPage>
+            <PageNumber>${pageNumber}</PageNumber>
         </Pagination>
         <Sort>TimeLeft</Sort>
     </ActiveList>
-    <OutputSelector>ItemID,Title,SKU,StartPrice,BuyItNowPrice,CurrentPrice,QuantityAvailable,Quantity,QuantitySold,ListingType,StartTime,EndTime,HitCount,PictureDetails.PictureURL,GalleryURL</OutputSelector>
+    <OutputSelector>ItemID,Title,SKU,StartPrice,BuyItNowPrice,CurrentPrice,QuantityAvailable,Quantity,QuantitySold,ListingType,StartTime,EndTime,HitCount,PictureDetails.PictureURL,GalleryURL,PaginationResult,TotalNumberOfEntries,TotalNumberOfPages</OutputSelector>
     <SellingSummary>
         <Include>true</Include>
     </SellingSummary>
@@ -1187,74 +1195,82 @@ const ebayAPI = {
     <WarningLevel>High</WarningLevel>
 </GetMyeBaySellingRequest>`;
 
-        const response = await fetch(tradingEndpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'text/xml',
-                'X-EBAY-API-SITEID': '0',
-                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
-                'X-EBAY-API-CALL-NAME': 'GetMyeBaySelling',
-                'X-EBAY-API-IAF-TOKEN': token
-            },
-            body: xmlRequest
-        });
+            const response = await fetch(tradingEndpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'text/xml',
+                    'X-EBAY-API-SITEID': '0',
+                    'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+                    'X-EBAY-API-CALL-NAME': 'GetMyeBaySelling',
+                    'X-EBAY-API-IAF-TOKEN': token
+                },
+                body: xmlRequest
+            });
 
-        const xmlText = await response.text();
+            const xmlText = await response.text();
 
-        const items = [];
-
-        // Extract ItemArray section first (items are in ActiveList > ItemArray > Item)
-        const itemArrayMatch = xmlText.match(/<ItemArray>([\s\S]*?)<\/ItemArray>/);
-        const itemArrayXml = itemArrayMatch ? itemArrayMatch[1] : xmlText;
-
-        const itemMatches = itemArrayXml.matchAll(/<Item>([\s\S]*?)<\/Item>/g);
-
-        for (const match of itemMatches) {
-            const itemXml = match[1];
-            const getTag = (tag) => {
-                // Handle tags with attributes like <StartPrice currencyID="USD">19.99</StartPrice>
-                const m = itemXml.match(new RegExp(`<${tag}[^>]*>([^<]*)</${tag}>`));
-                return m ? m[1] : '';
-            };
-
-            // For fixed-price items, price can be in StartPrice, BuyItNowPrice, or CurrentPrice
-            const price = getTag('StartPrice') || getTag('BuyItNowPrice') || getTag('CurrentPrice') || '0';
-
-            // Extract picture URL — try PictureURL first (full size), then GalleryURL
-            let pictureUrl = (itemXml.match(/<PictureURL>([^<]+)<\/PictureURL>/) ||
-                              itemXml.match(/<GalleryURL>([^<]+)<\/GalleryURL>/))?.[1] || null;
-            // Upgrade gallery thumbnails to 500px for better quality
-            if (pictureUrl && pictureUrl.includes('s-l140')) {
-                pictureUrl = pictureUrl.replace('s-l140', 's-l500');
+            // Capture pagination info on first page
+            if (pageNumber === 1) {
+                const totalMatch = xmlText.match(/<TotalNumberOfEntries>(\d+)<\/TotalNumberOfEntries>/);
+                if (totalMatch) totalEntries = parseInt(totalMatch[1]);
+                const errorMatch = xmlText.match(/<ShortMessage>([^<]*)<\/ShortMessage>/);
+                if (errorMatch) lastError = errorMatch[1];
             }
 
-            items.push({
-                itemId: getTag('ItemID'),
-                sku: getTag('SKU') || getTag('ItemID'),
-                title: getTag('Title'),
-                price: price,
-                currency: itemXml.match(/currencyID="([^"]+)"/)?.[1] || 'USD',
-                quantity: getTag('QuantityAvailable') || getTag('Quantity') || '1',
-                quantitySold: getTag('QuantitySold') || '0',
-                listingType: getTag('ListingType'),
-                startTime: getTag('StartTime'),
-                endTime: getTag('EndTime'),
-                viewCount: getTag('HitCount') || '0',
-                pictureUrl
-            });
+            // Extract items from this page
+            const itemArrayMatch = xmlText.match(/<ItemArray>([\s\S]*?)<\/ItemArray>/);
+            const itemArrayXml = itemArrayMatch ? itemArrayMatch[1] : '';
+            const itemMatches = [...itemArrayXml.matchAll(/<Item>([\s\S]*?)<\/Item>/g)];
+
+            // Stop if no items on this page (we're past the end)
+            if (itemMatches.length === 0) break;
+
+            for (const match of itemMatches) {
+                const itemXml = match[1];
+                const getTag = (tag) => {
+                    const m = itemXml.match(new RegExp(`<${tag}[^>]*>([^<]*)</${tag}>`));
+                    return m ? m[1] : '';
+                };
+
+                const price = getTag('StartPrice') || getTag('BuyItNowPrice') || getTag('CurrentPrice') || '0';
+
+                let pictureUrl = (itemXml.match(/<PictureURL>([^<]+)<\/PictureURL>/) ||
+                                  itemXml.match(/<GalleryURL>([^<]+)<\/GalleryURL>/))?.[1] || null;
+                if (pictureUrl && pictureUrl.includes('s-l140')) {
+                    pictureUrl = pictureUrl.replace('s-l140', 's-l500');
+                }
+
+                items.push({
+                    itemId: getTag('ItemID'),
+                    sku: getTag('SKU') || getTag('ItemID'),
+                    title: getTag('Title'),
+                    price: price,
+                    currency: itemXml.match(/currencyID="([^"]+)"/)?.[1] || 'USD',
+                    quantity: getTag('QuantityAvailable') || getTag('Quantity') || '1',
+                    quantitySold: getTag('QuantitySold') || '0',
+                    listingType: getTag('ListingType'),
+                    startTime: getTag('StartTime'),
+                    endTime: getTag('EndTime'),
+                    viewCount: getTag('HitCount') || '0',
+                    pictureUrl
+                });
+            }
+
+            // Stop if we got fewer items than the page size (last page) or reached total
+            if (itemMatches.length < ENTRIES_PER_PAGE) break;
+            if (totalEntries > 0 && items.length >= totalEntries) break;
+            pageNumber++;
         }
 
-        // Get total count
-        const totalMatch = xmlText.match(/<TotalNumberOfEntries>(\d+)<\/TotalNumberOfEntries>/);
-        const totalEntries = totalMatch ? parseInt(totalMatch[1]) : items.length;
-
-        const errorMatch = xmlText.match(/<ShortMessage>([^<]*)<\/ShortMessage>/);
+        if (pageNumber > MAX_PAGES) {
+            console.warn(`getActiveListings: hit MAX_PAGES safety cap (${MAX_PAGES}) for account ${accountId}`);
+        }
 
         return {
             items,
             count: items.length,
-            totalEntries,
-            error: errorMatch ? errorMatch[1] : null
+            totalEntries: totalEntries || items.length,
+            error: lastError
         };
     },
 
