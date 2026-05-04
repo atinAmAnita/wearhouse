@@ -1807,9 +1807,14 @@ const ebayAPI = {
 
         // 1. Fetch eBay active listings (Trading API)
         let ebayInventory = {};
-        // Don't silently swallow eBay API failures — caller (cron, sync button) needs to know
+        // Don't silently swallow eBay API failures — caller (cron, sync button) needs to know.
+        // Throw only when the fetch genuinely failed (no items + error). A warning alongside
+        // valid items is OK; ShortMessage covers both warnings and errors.
         const ebayData = await this.getActiveListings(accountId);
-        if (ebayData.error) throw new Error(`eBay API error: ${ebayData.error}`);
+        if (!ebayData.items?.length && ebayData.error) {
+            throw new Error(`eBay API error: ${ebayData.error}`);
+        }
+        if (ebayData.error) console.warn(`getActiveListings warning for ${accountId}: ${ebayData.error}`);
         if (ebayData.items) {
             ebayData.items.forEach(item => {
                 const sku = item.sku || item.itemId;
