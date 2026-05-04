@@ -76,7 +76,6 @@ const API = {
         getInventory: (accountId) => API.get(`/api/ebay/inventory/${accountId}`),
         getListings: (accountId) => API.get(`/api/ebay/listings/${accountId}`),
         pull: (accountId) => API.post(`/api/ebay/pull/${accountId}`),
-        push: (accountId) => API.post(`/api/ebay/push/${accountId}`),
         syncAll: (accountId) => API.post(`/api/ebay/sync-all/${accountId}`),
         publishAll: (accountId) => API.post(`/api/ebay/publish-all/${accountId}`),
         getPolicies: (accountId) => API.get(`/api/ebay/policies/${accountId}`),
