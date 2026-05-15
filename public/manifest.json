@@ -1,0 +1,16 @@
+{
+  "name": "STOCKFORGE",
+  "short_name": "STOCKFORGE",
+  "description": "Inventory and eBay listing management for sellers.",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0d0d0d",
+  "theme_color": "#f97316",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "categories": ["business", "productivity"]
+}

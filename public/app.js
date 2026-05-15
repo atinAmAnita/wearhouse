@@ -2562,6 +2562,11 @@ document.addEventListener('DOMContentLoaded', () => {
     Advanced.init();
     Updates.init();
 
+    // Register service worker — gives the app installability + instant shell loads
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(err => console.warn('SW registration failed:', err));
+    }
+
     // Load eBay status to populate accounts (needed for Advanced tab)
     eBay.loadStatus();
 
