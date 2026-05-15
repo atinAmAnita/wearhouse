@@ -2313,18 +2313,27 @@ app.post('/api/updates/:id/apply', ah(async (req, res) => {
             const newItemCode = newSku.substring(0, 6);
             const newDrawer = newSku.substring(6, 9);
             const newPosition = newSku.substring(9);
-            const newItem = {
-                sku: newSku, itemCode: newItemCode, drawerNumber: newDrawer, positionNumber: newPosition, fullLocation: `${newDrawer}-${newPosition}`,
-                price: oldItem.price, currentQty: oldItem.currentQty,
+
+            // Push SKU rename to eBay FIRST if the item has a listing.
+            // Invariant: if eBay fails, local doesn't change.
+            if (oldItem.ebaySync?.ebayItemId) {
+                const targetAccountId = oldItem.ebaySync?.ebayAccountId || accountId;
+                await ebayAPI.reviseItemSku(targetAccountId, oldItem.ebaySync.ebayItemId, newSku);
+            }
+
+            // Atomic local rename — keeps history, snapshot, etc.
+            await data.renameItem(sku, newSku, {
+                itemCode: newItemCode,
+                drawerNumber: newDrawer,
+                positionNumber: newPosition,
+                fullLocation: `${newDrawer}-${newPosition}`,
                 description: descChange ? descChange.newValue : oldItem.description,
-                categoryId: oldItem.categoryId, categoryName: oldItem.categoryName, condition: oldItem.condition,
-                itemSpecifics: oldItem.itemSpecifics || {}, dateAdded: oldItem.dateAdded, lastModified: new Date(),
-                ebaySync: oldItem.ebaySync || {},
-                staged: false,
-                history: [...(oldItem.history || []), { date: new Date(), action: 'SKU_CHANGE', qty: 0, newTotal: oldItem.currentQty, note: `SKU changed from ${sku} to ${newSku}` }]
-            };
-            await data.createItem(newItem);
-            await data.deleteItem(sku);
+                staged: false
+            });
+            await data.addHistory(newSku, {
+                date: new Date(), action: 'SKU_CHANGE', qty: 0, newTotal: oldItem.currentQty,
+                note: `SKU changed from ${sku} to ${newSku}`
+            });
         }
 
         await data.dismissPendingUpdate(req.params.id);
@@ -3475,41 +3484,56 @@ app.post('/api/admin/convert/preview', ah(async (req, res) => {
     res.json({ summary, plan });
 }));
 
+// Convert execute: queue SKU_CHANGE pending updates — does NOT touch eBay directly.
+// The user reviews them in the Updates tab and applies one-by-one (or Apply Filtered).
+// Apply on SKU_CHANGE pushes the rename to eBay first; local stays unchanged on failure.
+// Optional body.categories filters which action types to queue (e.g. ["convert_divider"] only).
 app.post('/api/admin/convert/execute', ah(async (req, res) => {
     if (req.body.password !== config.adminPassword) throw new HttpError(401, 'Invalid password');
+    const allowedCategories = Array.isArray(req.body.categories) && req.body.categories.length > 0
+        ? new Set(req.body.categories)
+        : null; // null = all non-skip categories
     const items = await data.getAllItemsRaw();
     const plan = buildConvertPlan(items);
 
-    const results = { renamed: [], skipped: [], failed: [] };
+    const pending = await data.getPendingUpdates('pending');
+    const alreadyQueued = new Set(
+        pending.filter(u => u.updateType === 'SKU_CHANGE').map(u => u.sku)
+    );
+
+    const results = { queued: [], skipped: [], failed: [] };
     for (const step of plan) {
         if (step.action === 'skip') {
             results.skipped.push({ sku: step.sku, reason: step.reason });
             continue;
         }
+        if (allowedCategories && !allowedCategories.has(step.action)) {
+            results.skipped.push({ sku: step.sku, reason: `not in requested categories (${step.action})` });
+            continue;
+        }
+        if (alreadyQueued.has(step.sku)) {
+            results.skipped.push({ sku: step.sku, reason: 'SKU_CHANGE already pending' });
+            continue;
+        }
         try {
-            // Push to eBay first if linked — invariant: if eBay fails, local doesn't change
-            if (step.hasEbayListing && step.ebayAccountId) {
-                await ebayAPI.reviseItemSku(step.ebayAccountId, step.ebayItemId, step.newSku);
-            }
-            // Rename local
-            const fullLocation = `${step.newDrawer}-${step.newPosition}`;
-            await data.renameItem(step.sku, step.newSku, {
+            await data.createPendingUpdate({
+                sku: step.sku,
                 itemCode: step.newItemCode,
-                drawerNumber: step.newDrawer,
-                positionNumber: step.newPosition,
-                fullLocation
+                description: step.description,
+                updateType: 'SKU_CHANGE',
+                changes: [{ field: 'sku', oldValue: step.sku, newValue: step.newSku }]
             });
-            await data.addHistory(step.newSku, {
-                date: new Date(), action: 'SKU_CHANGE', qty: 0, newTotal: 0,
-                note: `Converted by SKU normalizer: ${step.sku} → ${step.newSku}`
-            });
-            results.renamed.push({ from: step.sku, to: step.newSku, action: step.action });
+            results.queued.push({ from: step.sku, to: step.newSku, action: step.action });
         } catch (err) {
             results.failed.push({ sku: step.sku, target: step.newSku, error: err.message });
         }
     }
-    console.log(`[convert] renamed=${results.renamed.length} skipped=${results.skipped.length} failed=${results.failed.length}`);
-    res.json({ ranAt: new Date().toISOString(), summary: { renamed: results.renamed.length, skipped: results.skipped.length, failed: results.failed.length }, results });
+    console.log(`[convert] queued=${results.queued.length} skipped=${results.skipped.length} failed=${results.failed.length}`);
+    res.json({
+        ranAt: new Date().toISOString(),
+        summary: { queued: results.queued.length, skipped: results.skipped.length, failed: results.failed.length },
+        results
+    });
 }));
 
 app.get('/convert', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'convert.html')); });
