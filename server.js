@@ -3397,7 +3397,10 @@ app.post('/api/admin/debug', ah(async (req, res) => {
         staged: allItems.filter(i => i.staged).length,
         withImage: allItems.filter(i => i.imageUrl).length,
         withoutImage: allItems.filter(i => !i.imageUrl).length,
-        defaultLocation: allItems.filter(i => i.fullLocation === '000-00').length
+        defaultLocation: allItems.filter(i => i.fullLocation === '000-00').length,
+        // Items synced to eBay but missing the account tag — these are invisible
+        // when filtering Inventory by a specific account. Run /api/admin/backfill-account-ids to fix.
+        untaggedButSynced: allItems.filter(i => i.ebaySync?.ebayItemId && !i.ebaySync?.ebayAccountId).length
     };
 
     // Pending update breakdown
@@ -3417,6 +3420,48 @@ app.post('/api/admin/debug', ah(async (req, res) => {
             cronSecretConfigured: !!process.env.CRON_SECRET
         }
     });
+}));
+
+// One-shot backfill: walks each connected account's active eBay listings and tags any
+// matching local item whose ebaySync.ebayAccountId is missing. Safe to re-run.
+// Never overwrites an existing tag — earlier-pulled items win, which is the right call
+// (an item already belonging to account A shouldn't be reassigned to B just because B
+// happens to also list the same SKU).
+app.post('/api/admin/backfill-account-ids', ah(async (req, res) => {
+    if (req.body.password !== config.adminPassword) throw new HttpError(401, 'Invalid password');
+
+    const accounts = await data.getAllAccounts();
+    const perAccount = [];
+    let totalTagged = 0;
+
+    for (const acc of accounts) {
+        const row = { id: acc.id, name: acc.name, tagged: 0, alreadyTagged: 0, notFoundLocally: 0, error: null };
+        if (!acc.hasValidToken) { row.error = 'Token expired'; perAccount.push(row); continue; }
+        try {
+            const ebayData = await ebayAPI.getActiveListings(acc.id);
+            for (const ebayItem of (ebayData.items || [])) {
+                const sku = ebayItem.sku || ebayItem.itemId;
+                if (!sku) continue;
+                const localItem = await data.getItem(sku);
+                if (!localItem) { row.notFoundLocally++; continue; }
+                if (localItem.ebaySync?.ebayAccountId) { row.alreadyTagged++; continue; }
+                await data.updateItem(sku, {
+                    ebaySync: {
+                        ...(localItem.ebaySync || {}),
+                        ebayAccountId: acc.id,
+                        ebayItemId: localItem.ebaySync?.ebayItemId || ebayItem.itemId || null
+                    }
+                });
+                row.tagged++;
+                totalTagged++;
+            }
+        } catch (err) {
+            row.error = err.message;
+        }
+        perAccount.push(row);
+    }
+
+    res.json({ totalTagged, perAccount });
 }));
 
 // ============================================

@@ -62,6 +62,14 @@
         <h2>Items</h2>
         <div class="panel">
             <div class="grid" id="itemStats"></div>
+            <div id="backfillPanel" style="margin-top:15px; display:none; padding:12px; background:#0a0a0a; border:1px solid #78350f; border-radius:4px;">
+                <div style="color:#fbbf24; font-size:0.9rem; margin-bottom:8px;">
+                    <strong>⚠ Some synced items have no account tag.</strong>
+                    These items are invisible when filtering Inventory by a specific account.
+                </div>
+                <button onclick="runBackfill()" id="backfillBtn" style="background:#f97316;">Backfill account IDs from eBay</button>
+                <div id="backfillResult" style="margin-top:10px; font-size:0.85rem;"></div>
+            </div>
         </div>
 
         <h2>Pending Updates</h2>
@@ -105,6 +113,34 @@
 
         function stat(label, value) {
             return `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+        }
+
+        async function runBackfill() {
+            const btn = document.getElementById('backfillBtn');
+            const out = document.getElementById('backfillResult');
+            btn.disabled = true; btn.textContent = 'Running...';
+            out.textContent = '';
+            try {
+                const resp = await fetch('/api/admin/backfill-account-ids', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: savedPassword })
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.error || 'Failed');
+                const lines = [`<strong style="color:#4ade80;">Tagged ${data.totalTagged} item(s).</strong>`];
+                for (const r of data.perAccount) {
+                    if (r.error) lines.push(`<div style="color:#fca5a5;">${r.name}: ${r.error}</div>`);
+                    else lines.push(`<div>${r.name}: +${r.tagged} new, ${r.alreadyTagged} already tagged, ${r.notFoundLocally} not in local DB</div>`);
+                }
+                out.innerHTML = lines.join('');
+                // Refresh the snapshot to update the stat
+                load();
+            } catch (err) {
+                out.innerHTML = `<div style="color:#fca5a5;">${err.message}</div>`;
+            } finally {
+                btn.disabled = false; btn.textContent = 'Backfill account IDs from eBay';
+            }
         }
 
         function render(data) {
@@ -159,8 +195,13 @@
                 stat('Staged (pending CREATE)', data.items.staged),
                 stat('With image', data.items.withImage),
                 stat('Without image', data.items.withoutImage),
-                stat('Default location (000-00)', data.items.defaultLocation)
+                stat('Default location (000-00)', data.items.defaultLocation),
+                stat('Synced but no account tag', data.items.untaggedButSynced || 0)
             ].join('');
+
+            // Show the backfill panel only if there's actually something to fix.
+            const panel = document.getElementById('backfillPanel');
+            if (panel) panel.style.display = (data.items.untaggedButSynced > 0) ? 'block' : 'none';
 
             // Pending
             const byType = data.pendingUpdates.byType || {};
