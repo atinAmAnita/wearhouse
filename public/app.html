@@ -23,6 +23,13 @@
             <h1>STOCKFORGE</h1>
             <p class="subtitle">Inventory Control System</p>
             <a href="/admin" class="admin-link">Admin Panel</a>
+            <div class="header-account-bar" style="display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap;">
+                <label for="globalAccountSelect" style="color:#94a3b8; font-size:0.85rem;">Active account:</label>
+                <select id="globalAccountSelect" onchange="setActiveAccountFromHeader()" style="padding:6px 10px; background:#2a2a2a; border:1px solid #444; color:#ddd; border-radius:4px; font-size:0.9rem; min-width:200px;">
+                    <option value="all">All accounts</option>
+                </select>
+                <span id="globalAccountHint" style="color:#6b7280; font-size:0.8rem;"></span>
+            </div>
         </header>
 
         <nav class="tabs">
@@ -215,9 +222,6 @@
                     <option value="all">All Items</option>
                     <option value="needs-sku">Needs SKU</option>
                     <option value="ebay-imports">eBay Imports</option>
-                </select>
-                <select id="accountFilter" class="styled-select" onchange="Inventory.applyFilter()">
-                    <option value="all">All Accounts</option>
                 </select>
                 <button class="btn btn-secondary" onclick="Inventory.load()">Refresh</button>
             </div>

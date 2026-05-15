@@ -329,6 +329,13 @@ const AddItem = {
             return;
         }
 
+        // Items must be tagged to a specific account — refuse "All accounts" mode.
+        const activeAccountId = eBay.getActiveAccountId();
+        if (activeAccountId === 'all') {
+            UI.notify('Pick a specific account in the header before adding items', 'error');
+            return;
+        }
+
         try {
             const data = await API.inventory.add({
                 itemId,
@@ -336,7 +343,8 @@ const AddItem = {
                 position: location.substring(3, 7),
                 price,
                 quantity,
-                description
+                description,
+                accountId: activeAccountId
             });
 
             // Apply pending advanced settings if any
@@ -651,12 +659,10 @@ const Inventory = {
             });
         }
 
-        // Apply account filter (client-side)
-        const accountFilter = UI.el('accountFilter')?.value || 'all';
-        if (accountFilter === 'none') {
-            items = items.filter(i => !i.EbayAccountId);
-        } else if (accountFilter !== 'all') {
-            items = items.filter(i => i.EbayAccountId === accountFilter);
+        // Apply global account filter (header dropdown — 'all' = no filter)
+        const activeAccount = eBay.getActiveAccountId();
+        if (activeAccount !== 'all') {
+            items = items.filter(i => i.EbayAccountId === activeAccount);
         }
 
         // Apply sorting
@@ -1288,34 +1294,34 @@ const eBay = {
     },
 
     populateAccounts() {
-        // Selector — preserve current selection (from DOM or localStorage)
-        const select = UI.el('accountSelect');
-        const previousSelection = select.value || localStorage.getItem('selectedEbayAccount') || '';
+        const stored = localStorage.getItem('selectedEbayAccount') || '';
         const activeAccounts = State.ebayAccounts.filter(a => a.hasValidToken);
+
+        // eBay-tab operational selector (specific account; empty = none chosen)
+        const select = UI.el('accountSelect');
         select.innerHTML = '<option value="">-- Select Account --</option>' +
             State.ebayAccounts.map(acc =>
-                `<option value="${acc.id}" ${!acc.hasValidToken ? 'disabled' : ''}>
-                    ${acc.name} ${!acc.hasValidToken ? '(Token Expired)' : ''}
-                </option>`
+                `<option value="${acc.id}" ${!acc.hasValidToken ? 'disabled' : ''}>${acc.name}${!acc.hasValidToken ? ' (Token Expired)' : ''}</option>`
             ).join('');
 
-        // Inventory account filter — preserve its selection too
-        const accountFilter = UI.el('accountFilter');
-        if (accountFilter) {
-            const prevFilter = accountFilter.value || 'all';
-            accountFilter.innerHTML = '<option value="all">All Accounts</option>'
-                + '<option value="none">Not on eBay</option>'
-                + State.ebayAccounts.map(acc => `<option value="${acc.id}">${acc.name}</option>`).join('');
-            if ([...accountFilter.options].some(o => o.value === prevFilter)) accountFilter.value = prevFilter;
+        // Global header selector (drives the entire app; 'all' = no filter)
+        const globalSel = UI.el('globalAccountSelect');
+        if (globalSel) {
+            globalSel.innerHTML = '<option value="all">All accounts</option>' +
+                State.ebayAccounts.map(acc =>
+                    `<option value="${acc.id}" ${!acc.hasValidToken ? 'disabled' : ''}>${acc.name}${!acc.hasValidToken ? ' (Token Expired)' : ''}</option>`
+                ).join('');
         }
-        // Restore previous selection if still valid, otherwise auto-select if only one
-        if (previousSelection && [...select.options].some(o => o.value === previousSelection && !o.disabled)) {
-            select.value = previousSelection;
+
+        // Pick initial selection: prefer stored; else auto-pick the sole active account
+        let initial = '';
+        if (stored && [...select.options].some(o => o.value === stored && !o.disabled)) {
+            initial = stored;
         } else if (activeAccounts.length === 1) {
-            select.value = activeAccounts[0].id;
+            initial = activeAccounts[0].id;
         }
-        // Persist selection on change
-        select.onchange = () => localStorage.setItem('selectedEbayAccount', select.value);
+        eBay.setActiveAccount(initial, { silent: true });
+        select.onchange = () => eBay.setActiveAccount(select.value);
 
         // List
         UI.setHTML('accountsContainer', State.ebayAccounts.map(acc => `
@@ -1355,8 +1361,51 @@ const eBay = {
         }
     },
 
+    // Operational selector for eBay API calls — '' = none picked.
+    // Falls back to localStorage so ops work from any tab after refresh.
     getSelectedAccount() {
-        return UI.el('accountSelect')?.value || '';
+        return UI.el('accountSelect')?.value || localStorage.getItem('selectedEbayAccount') || '';
+    },
+
+    // Global filter driving Inventory/Updates/etc — 'all' | accountId.
+    getActiveAccountId() {
+        return UI.el('globalAccountSelect')?.value || (localStorage.getItem('selectedEbayAccount') || 'all') || 'all';
+    },
+
+    // Single entry point for changing the active account. Mirrors both selectors,
+    // persists to localStorage, updates the hint, and re-renders dependent tabs.
+    // accountId: '' or 'all' = no filter; anything else = specific account.
+    // opts.silent: skip re-rendering (used during initial populate to avoid double work).
+    setActiveAccount(accountId, opts = {}) {
+        const stored = (accountId === 'all') ? '' : (accountId || '');
+        localStorage.setItem('selectedEbayAccount', stored);
+
+        const opSel = UI.el('accountSelect');
+        if (opSel) {
+            const opt = [...opSel.options].find(o => o.value === stored);
+            if (opt && !opt.disabled) opSel.value = stored;
+            else if (!stored) opSel.value = '';
+        }
+        const globalSel = UI.el('globalAccountSelect');
+        if (globalSel) globalSel.value = stored || 'all';
+
+        // Update header hint
+        const hint = UI.el('globalAccountHint');
+        if (hint) {
+            if (!stored) {
+                hint.textContent = 'Showing all listings';
+                hint.style.color = '#6b7280';
+            } else {
+                const acc = State.ebayAccounts.find(a => a.id === stored);
+                hint.textContent = acc ? `Filtered to ${acc.name}` : 'Filtered to selected account';
+                hint.style.color = '#f97316';
+            }
+        }
+
+        if (!opts.silent) {
+            Inventory.render?.();
+            Updates.applyFilters?.();
+        }
     },
 
     // Display sync results in the UI
@@ -1528,7 +1577,7 @@ const eBay = {
     async publishAll() {
         const accountId = eBay.getSelectedAccount();
         if (!accountId) {
-            UI.notify('Please select an eBay account first', 'error');
+            UI.notify('Pick a specific account in the header — publishing requires one account, not "All accounts"', 'error');
             return;
         }
 
@@ -1908,11 +1957,12 @@ const Updates = {
         }
     },
 
-    // Compute the currently-filtered list from search + type + age
+    // Compute the currently-filtered list from search + type + age + active account
     getFiltered() {
         const q = (UI.el('updatesSearch')?.value || '').trim().toLowerCase();
         const typeFilter = UI.el('updatesTypeFilter')?.value || 'all';
         const ageFilter = UI.el('updatesAgeFilter')?.value || 'all';
+        const activeAccount = eBay.getActiveAccountId();
         const now = Date.now();
         return (this.allUpdates || []).filter(u => {
             if (typeFilter !== 'all' && u.updateType !== typeFilter) return false;
@@ -1926,6 +1976,7 @@ const Updates = {
                 if (ageFilter === 'stale' && ageDays < 7) return false;
                 if (ageFilter === 'very-stale' && ageDays < 30) return false;
             }
+            if (activeAccount !== 'all' && u.ebayAccountId !== activeAccount) return false;
             return true;
         });
     },
@@ -2549,6 +2600,11 @@ async function importFullBackup(input) {
 
     // Reset file input
     input.value = '';
+}
+
+// Header dropdown onchange handler — see eBay.setActiveAccount for the impl.
+function setActiveAccountFromHeader() {
+    eBay.setActiveAccount(document.getElementById('globalAccountSelect')?.value || 'all');
 }
 
 // ============================================

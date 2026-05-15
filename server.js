@@ -2150,9 +2150,28 @@ app.get('/api/inventory/:sku/history', async (req, res) => {
 app.get('/api/updates', async (req, res) => {
     try {
         const status = req.query.status || 'pending';
-        const updates = await data.getPendingUpdates(status);
-        const count = await data.countPendingUpdates();
-        res.json({ updates, pendingCount: count });
+        const [updates, allItems, count] = await Promise.all([
+            data.getPendingUpdates(status),
+            data.getAllItemsRaw(),
+            data.countPendingUpdates()
+        ]);
+        // Build sku -> ebayAccountId map once, then enrich each update in O(1).
+        const skuToAccount = new Map();
+        for (const it of allItems) skuToAccount.set(it.sku, it.ebaySync?.ebayAccountId || null);
+        const enriched = updates.map(u => {
+            const obj = u.toObject ? u.toObject() : { ...u };
+            // For SKU_CHANGE: try the new SKU first (post-rename), else the old SKU.
+            let acc = null;
+            if (obj.updateType === 'SKU_CHANGE') {
+                const newSku = (obj.changes || []).find(c => c.field === 'SKU')?.newValue;
+                acc = (newSku && skuToAccount.get(newSku)) || skuToAccount.get(obj.sku) || null;
+            } else {
+                acc = skuToAccount.get(obj.sku) || null;
+            }
+            obj.ebayAccountId = acc;
+            return obj;
+        });
+        res.json({ updates: enriched, pendingCount: count });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -2427,9 +2446,14 @@ app.get('/api/next-location', async (req, res) => {
 
 app.post('/api/inventory', async (req, res) => {
     try {
-        const { itemId, drawer, position, price = 0, quantity = 1, description = '' } = req.body;
+        const { itemId, drawer, position, price = 0, quantity = 1, description = '', accountId = null } = req.body;
         if (!itemId || !drawer || position == null || position === '') return res.status(400).json({ error: 'Item ID, drawer, and position are required' });
         if (!/^\d{6}$/.test(itemId)) return res.status(400).json({ error: 'Item ID must be exactly 6 digits' });
+
+        // Require a real account so the item is scoped — prevents items from leaking across accounts
+        if (!accountId) return res.status(400).json({ error: 'accountId is required (pick an account in the header)' });
+        const targetAccount = await data.getAccount(accountId);
+        if (!targetAccount) return res.status(400).json({ error: `Unknown account: ${accountId}` });
 
         const drawerStr = String(drawer).padStart(3, '0');
         const positionStr = String(position).padStart(4, '0');
@@ -2439,6 +2463,10 @@ app.post('/api/inventory', async (req, res) => {
 
         const existingByItemId = await data.getItemByCode(itemId);
         if (existingByItemId) {
+            const ownerAccount = existingByItemId.ebaySync?.ebayAccountId;
+            if (ownerAccount && ownerAccount !== accountId) {
+                return res.status(400).json({ error: `Item ${itemId} already exists on another account (${ownerAccount}). Switch to that account or use a different Item ID.` });
+            }
             const newQty = existingByItemId.currentQty + qtyToAdd;
             // Stage changes - do NOT apply to item yet
             const pendingChanges = [{ field: 'quantity', oldValue: existingByItemId.currentQty, newValue: newQty }];
@@ -2459,7 +2487,8 @@ app.post('/api/inventory', async (req, res) => {
             staged: true, dateAdded: now, lastModified: now,
             ebaySync: {
                 snapshot: { quantity: qtyToAdd, price: parseFloat(price) || 0, title: description, description: '', condition: '', takenAt: now },
-                status: 'not_synced'
+                status: 'not_synced',
+                ebayAccountId: accountId
             },
             history: [{ date: now, action: 'CREATE', qty: qtyToAdd, newTotal: qtyToAdd, note: 'Item created' }]
         };
@@ -3275,6 +3304,12 @@ app.post('/api/ebay/publish-all/:accountId', ah(async (req, res) => {
                 }
                 if (fullItem.ebaySync?.ebayItemId) {
                     out.skipped.push({ sku: fullItem.sku, reason: 'Already on eBay' });
+                    continue;
+                }
+                // Account isolation: only publish items tagged to this account (or untagged ones)
+                const ownerAccount = fullItem.ebaySync?.ebayAccountId;
+                if (ownerAccount && ownerAccount !== accountId) {
+                    out.skipped.push({ sku: fullItem.sku, reason: `Belongs to another account (${ownerAccount})` });
                     continue;
                 }
                 const result = await ebayAPI.addFixedPriceItem(accountId, {
