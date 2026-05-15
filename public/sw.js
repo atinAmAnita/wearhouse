@@ -2,7 +2,7 @@
 // Strategy: network-first for the shell so fresh deploys show up on the next visit.
 // Falls back to the cached copy only when offline. API requests are never cached.
 
-const VERSION = 'forge-shell-v2';
+const VERSION = 'forge-shell-v3';
 const SHELL = [
     '/app',
     '/app.html',
@@ -24,11 +24,19 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
-    event.waitUntil(
-        caches.keys().then(keys =>
-            Promise.all(keys.filter(k => k !== VERSION).map(k => caches.delete(k)))
-        ).then(() => self.clients.claim())
-    );
+    event.waitUntil((async () => {
+        // Wipe ALL old caches, regardless of name — the previous cache-first version
+        // shipped stale HTML/JS and we need a clean slate.
+        const keys = await caches.keys();
+        await Promise.all(keys.filter(k => k !== VERSION).map(k => caches.delete(k)));
+        await self.clients.claim();
+        // Force all open clients to reload so they pick up the new shell immediately,
+        // rather than waiting for the user to refresh manually.
+        const clients = await self.clients.matchAll({ type: 'window' });
+        for (const c of clients) {
+            try { await c.navigate(c.url); } catch (_) { /* some clients can't navigate */ }
+        }
+    })());
 });
 
 self.addEventListener('fetch', (event) => {
@@ -40,7 +48,6 @@ self.addEventListener('fetch', (event) => {
     if (url.origin !== self.location.origin) return;
 
     // Network-first: always try the live version. Cache only as a fallback for offline.
-    // This is what prevents stale HTML/JS from sticking around across deploys.
     event.respondWith(
         fetch(req).then(networkResp => {
             if (networkResp.ok) {
