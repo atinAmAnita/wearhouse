@@ -94,10 +94,26 @@
             <form id="lookupForm">
                 <div class="form-group">
                     <label for="skuInput">Enter or Scan SKU</label>
-                    <input type="text" id="skuInput" placeholder="Scan barcode or enter SKU" autofocus>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <input type="text" id="skuInput" placeholder="Scan barcode or enter SKU" autofocus style="flex:1; min-width:180px;">
+                        <button type="button" class="btn btn-secondary" onclick="Scanner.open()" id="scanBtn" title="Open camera and scan a barcode" style="white-space:nowrap;">📷 Scan</button>
+                    </div>
                 </div>
                 <button type="submit" class="btn btn-primary">Lookup</button>
             </form>
+
+            <!-- Camera scanner modal -->
+            <div id="scannerModal" class="modal hidden" style="position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:9999; display:flex; align-items:center; justify-content:center;">
+                <div style="background:#111; padding:16px; border-radius:8px; max-width:95vw; width:420px; box-shadow:0 0 40px rgba(0,0,0,0.6);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                        <h3 style="margin:0; color:#f97316;">Scan Barcode</h3>
+                        <button class="btn btn-sm" onclick="Scanner.close()" style="background:#444; color:#fff;">✕ Close</button>
+                    </div>
+                    <div id="scannerReader" style="width:100%; min-height:280px; background:#000; border-radius:4px; overflow:hidden;"></div>
+                    <p id="scannerStatus" style="color:#94a3b8; font-size:0.85rem; margin:10px 0 0; text-align:center;">Point camera at barcode…</p>
+                    <p style="color:#6b7280; font-size:0.75rem; margin:6px 0 0; text-align:center;">Allow camera access. Hold the label flat and well-lit.</p>
+                </div>
+            </div>
 
             <div id="lookupResult" class="result-panel hidden">
                 <h3>Item Found</h3>
@@ -612,6 +628,7 @@
 
     <div id="notification" class="notification hidden"></div>
 
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

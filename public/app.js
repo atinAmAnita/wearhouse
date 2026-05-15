@@ -2290,6 +2290,92 @@ const EditItem = {
 };
 
 // ============================================
+// SCANNER - Camera barcode scanner (html5-qrcode)
+// ============================================
+const Scanner = {
+    instance: null,
+    busy: false,
+
+    isAvailable() {
+        return typeof Html5Qrcode !== 'undefined';
+    },
+
+    setStatus(msg, color) {
+        const el = UI.el('scannerStatus');
+        if (el) { el.textContent = msg; if (color) el.style.color = color; }
+    },
+
+    async open() {
+        if (this.busy) return;
+        if (!this.isAvailable()) {
+            UI.notify('Scanner library not loaded — refresh the page', 'error');
+            return;
+        }
+        const modal = UI.el('scannerModal');
+        if (!modal) return;
+        modal.classList.remove('hidden');
+        this.setStatus('Starting camera…', '#94a3b8');
+
+        try {
+            this.busy = true;
+            this.instance = new Html5Qrcode('scannerReader');
+            // Prefer rear camera on mobile
+            const config = {
+                fps: 10,
+                qrbox: { width: 280, height: 140 },
+                // CODE128 is what our labels use; include common 1D formats for flexibility
+                formatsToSupport: [
+                    Html5QrcodeSupportedFormats.CODE_128,
+                    Html5QrcodeSupportedFormats.CODE_39,
+                    Html5QrcodeSupportedFormats.EAN_13,
+                    Html5QrcodeSupportedFormats.UPC_A
+                ],
+                aspectRatio: 1.5
+            };
+            await this.instance.start(
+                { facingMode: 'environment' },
+                config,
+                (decoded) => this.onDecode(decoded),
+                () => { /* per-frame failure — ignore, normal during scanning */ }
+            );
+        } catch (err) {
+            this.busy = false;
+            this.setStatus('Camera error: ' + (err?.message || err), '#fca5a5');
+            UI.notify('Could not start camera — check browser permissions', 'error');
+        }
+    },
+
+    async close() {
+        const modal = UI.el('scannerModal');
+        if (modal) modal.classList.add('hidden');
+        if (this.instance) {
+            try {
+                if (this.instance.isScanning) await this.instance.stop();
+                this.instance.clear();
+            } catch (_) { /* ignore */ }
+            this.instance = null;
+        }
+        this.busy = false;
+    },
+
+    async onDecode(text) {
+        // Decoded! Auto-submit lookup and close.
+        if (!this.instance || !this.busy) return;
+        this.busy = false; // prevent multiple submissions if frames keep firing
+        this.setStatus(`Decoded: ${text}`, '#4ade80');
+        try { if (this.instance.isScanning) await this.instance.stop(); } catch (_) {}
+
+        const input = UI.el('skuInput');
+        if (input) input.value = text.trim();
+        await this.close();
+
+        // Trigger the existing lookup flow
+        const form = UI.el('lookupForm');
+        if (form) form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+    }
+};
+
+// ============================================
 // GLOBAL FUNCTIONS - For onclick handlers
 // ============================================
 const generateNextItemId = () => Generate.itemId();
