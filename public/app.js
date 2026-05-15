@@ -240,8 +240,8 @@ const AddItem = {
     },
 
     updatePreview() {
-        const itemId = UI.el('itemId').value.padStart(4, '-');
-        const location = UI.el('location').value.padStart(5, '-');
+        const itemId = UI.el('itemId').value.padStart(6, '-');
+        const location = UI.el('location').value.padStart(7, '-');
         UI.setText('skuPreview', itemId + location);
     },
 
@@ -249,7 +249,7 @@ const AddItem = {
         const itemId = UI.el('itemId').value;
         const statusEl = UI.el('itemStatus');
 
-        if (itemId.length !== 4) {
+        if (itemId.length !== 6) {
             statusEl.style.display = 'none';
             // Clear auto-filled location if ID is incomplete
             if (State.locationAutoFilled) {
@@ -293,10 +293,10 @@ const AddItem = {
         const location = UI.el('location').value;
         const statusEl = UI.el('itemStatus');
 
-        if (location.length !== 5) return;
+        if (location.length !== 7) return;
 
         const drawer = location.substring(0, 3);
-        const position = location.substring(3, 5);
+        const position = location.substring(3, 7);
 
         try {
             const data = await API.inventory.checkLocation(drawer, position);
@@ -320,12 +320,12 @@ const AddItem = {
         const quantity = UI.el('quantity').value;
         const description = UI.el('description').value;
 
-        if (itemId.length !== 4) {
-            UI.notify('Item ID must be 4 digits', 'error');
+        if (itemId.length !== 6) {
+            UI.notify('Item ID must be 6 digits', 'error');
             return;
         }
-        if (location.length !== 5) {
-            UI.notify('Location must be 5 digits (3 drawer + 2 position)', 'error');
+        if (location.length !== 7) {
+            UI.notify('Location must be 7 digits (3 drawer + 4 position)', 'error');
             return;
         }
 
@@ -333,7 +333,7 @@ const AddItem = {
             const data = await API.inventory.add({
                 itemId,
                 drawer: location.substring(0, 3),
-                position: location.substring(3, 5),
+                position: location.substring(3, 7),
                 price,
                 quantity,
                 description
@@ -2181,10 +2181,10 @@ const EditItem = {
             UI.hide(UI.el('editEbayRef'));
         }
 
-        // Pre-fill if valid warehouse format (9 digits)
-        if (/^\d{9}$/.test(this.currentSku)) {
-            UI.el('editItemId').value = this.currentSku.substring(0, 4);
-            UI.el('editLocation').value = this.currentSku.substring(4);
+        // Pre-fill if valid warehouse format (13 digits: 6 itemCode + 3 drawer + 4 position)
+        if (/^\d{13}$/.test(this.currentSku)) {
+            UI.el('editItemId').value = this.currentSku.substring(0, 6);
+            UI.el('editLocation').value = this.currentSku.substring(6);
         } else {
             UI.el('editItemId').value = '';
             UI.el('editLocation').value = '';
@@ -2198,7 +2198,7 @@ const EditItem = {
     updatePreview() {
         const itemId = UI.el('editItemId').value || '';
         const location = UI.el('editLocation').value || '';
-        const preview = (itemId.padEnd(4, '-')) + '+' + (location.padEnd(5, '-'));
+        const preview = (itemId.padEnd(6, '-')) + '+' + (location.padEnd(7, '-'));
         UI.el('editSkuPreview').textContent = preview;
     },
 

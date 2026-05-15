@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>STOCKFORGE Convert SKUs</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d0d0d; color: #ddd; margin: 0; padding: 20px; }
+        h1 { color: #f97316; margin: 0 0 8px; }
+        h2 { color: #94a3b8; font-size: 1rem; text-transform: uppercase; letter-spacing: 1px; margin: 30px 0 10px; }
+        .login-box { max-width: 420px; margin: 80px auto; background: #1a1a1a; padding: 30px; border-radius: 8px; border: 1px solid #333; }
+        .login-box input { width: 100%; padding: 10px; margin-top: 10px; background: #2a2a2a; border: 1px solid #444; color: #ddd; border-radius: 4px; box-sizing: border-box; }
+        .login-box button { width: 100%; padding: 10px; margin-top: 15px; background: #f97316; color: #000; border: 0; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .panel { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+        .stat { background: #222; padding: 14px; border-radius: 6px; }
+        .stat .label { color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat .value { color: #f1f5f9; font-size: 1.4rem; font-weight: bold; margin-top: 4px; }
+        button { background: #2563eb; color: #fff; border: 0; padding: 8px 14px; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+        button:hover { background: #1d4ed8; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        button.danger { background: #c62828; }
+        button.danger:hover { background: #b71c1c; }
+        a.back { color: #6b7280; text-decoration: none; font-size: 0.85rem; }
+        a.back:hover { color: #ddd; }
+        .err { color: #fca5a5; font-size: 0.85rem; margin-top: 4px; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #2a2a2a; }
+        th { color: #94a3b8; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; font-size: 0.7rem; }
+        td.action-skip { color: #6b7280; }
+        td.action-convert_divider { color: #4ade80; }
+        td.action-generate_fresh { color: #fbbf24; }
+        .badge { display: inline-block; padding: 2px 6px; font-size: 0.7rem; border-radius: 3px; }
+        .badge-ebay { background: #1e3a8a; color: #93c5fd; }
+        .scroll-table { max-height: 460px; overflow-y: auto; border: 1px solid #2a2a2a; border-radius: 4px; }
+        .warning-box { background: #2a1f0a; border: 1px solid #78350f; color: #fbbf24; padding: 12px; border-radius: 6px; margin-bottom: 15px; }
+        .filter-row { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
+        .filter-row input, .filter-row select { padding: 6px 8px; background: #2a2a2a; border: 1px solid #444; color: #ddd; border-radius: 4px; font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+    <a href="/app" class="back">&larr; Back to app</a>
+    <h1>STOCKFORGE — SKU Converter</h1>
+    <p style="color:#6b7280; margin:0 0 25px;">Normalize all SKUs to the standard 13-digit format: <code style="background:#222; padding:2px 6px; border-radius:3px;">XXXXXX000YYYY</code> (6-itemCode + 000 drawer + 4-position).</p>
+
+    <div id="loginBox" class="login-box">
+        <h2 style="margin:0; color:#f97316;">Admin Password</h2>
+        <input type="password" id="passwordInput" placeholder="Password" onkeydown="if(event.key==='Enter') loadPreview()">
+        <button onclick="loadPreview()">Load Preview</button>
+        <p id="loginErr" class="err" style="display:none;"></p>
+    </div>
+
+    <div id="content" style="display:none;">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+            <button onclick="loadPreview()" id="refreshBtn">Refresh Preview</button>
+            <button onclick="execute()" id="executeBtn" class="danger">Execute Conversion</button>
+            <span id="snapshotAt" style="color:#6b7280; font-size:0.85rem;"></span>
+        </div>
+
+        <h2>Summary</h2>
+        <div class="panel">
+            <div class="grid" id="summaryStats"></div>
+        </div>
+
+        <h2>Plan</h2>
+        <div class="panel">
+            <div class="warning-box">
+                Preview only — no changes applied yet. Click <strong>Execute Conversion</strong> to commit. eBay-linked items get renamed on eBay too (one Trading API call each). If eBay fails for an item, that item's local SKU is NOT changed.
+            </div>
+            <div class="filter-row">
+                <input type="text" id="filterText" placeholder="Filter by SKU or description…" oninput="renderPlan()" style="flex:1; min-width:200px;">
+                <select id="filterAction" onchange="renderPlan()">
+                    <option value="all">All actions</option>
+                    <option value="skip">Skip only</option>
+                    <option value="convert_divider">Convert (000 divider) only</option>
+                    <option value="generate_fresh">Generate fresh only</option>
+                </select>
+                <span id="visibleCount" style="color:#6b7280; font-size:0.85rem;"></span>
+            </div>
+            <div class="scroll-table">
+                <table>
+                    <thead><tr><th>Action</th><th>Current SKU</th><th>New SKU</th><th>Description</th><th>eBay</th></tr></thead>
+                    <tbody id="planRows"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="resultsBlock" style="display:none;">
+            <h2>Execution Results</h2>
+            <div class="panel">
+                <div class="grid" id="resultsStats"></div>
+                <div id="failedList" style="margin-top:15px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let savedPassword = '';
+        let lastPlan = [];
+
+        async function loadPreview() {
+            const password = savedPassword || document.getElementById('passwordInput').value;
+            if (!password) return;
+            const btn = document.getElementById('refreshBtn');
+            if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+            try {
+                const resp = await fetch('/api/admin/convert/preview', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password })
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.error || 'Failed');
+                savedPassword = password;
+                document.getElementById('loginBox').style.display = 'none';
+                document.getElementById('content').style.display = 'block';
+                document.getElementById('snapshotAt').textContent = `Loaded ${new Date().toLocaleString()}`;
+                renderSummary(data.summary);
+                lastPlan = data.plan;
+                renderPlan();
+            } catch (err) {
+                const e = document.getElementById('loginErr');
+                e.textContent = err.message;
+                e.style.display = 'block';
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = 'Refresh Preview'; }
+            }
+        }
+
+        function renderSummary(s) {
+            document.getElementById('summaryStats').innerHTML = [
+                stat('Total items', s.total),
+                stat('Already proper', s.skip, '#6b7280'),
+                stat('To convert (000 divider)', s.convertDivider, '#4ade80'),
+                stat('To generate fresh', s.generateFresh, '#fbbf24'),
+                stat('Will hit eBay API', s.withEbayListing, '#93c5fd')
+            ].join('');
+        }
+
+        function stat(label, value, color) {
+            return `<div class="stat"><div class="label">${label}</div><div class="value" ${color ? 'style="color:'+color+'"' : ''}>${value}</div></div>`;
+        }
+
+        function renderPlan() {
+            const q = (document.getElementById('filterText')?.value || '').trim().toLowerCase();
+            const af = document.getElementById('filterAction')?.value || 'all';
+            const filtered = lastPlan.filter(p => {
+                if (af !== 'all' && p.action !== af) return false;
+                if (q) {
+                    const hay = `${p.sku} ${p.newSku || ''} ${p.description || ''}`.toLowerCase();
+                    if (!hay.includes(q)) return false;
+                }
+                return true;
+            });
+            document.getElementById('visibleCount').textContent = filtered.length === lastPlan.length
+                ? `${filtered.length} rows`
+                : `Showing ${filtered.length} of ${lastPlan.length}`;
+            const max = 1000;
+            const rows = filtered.slice(0, max).map(p => `
+                <tr>
+                    <td class="action-${p.action}"><strong>${labelFor(p.action)}</strong>${p.reason ? `<br><span style="font-size:0.75rem; color:#6b7280;">${p.reason}</span>` : ''}</td>
+                    <td><code>${p.sku}</code></td>
+                    <td>${p.newSku ? `<code>${p.newSku}</code>` : '<span style="color:#6b7280;">—</span>'}</td>
+                    <td style="max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(p.description || '')}</td>
+                    <td>${p.hasEbayListing ? `<span class="badge badge-ebay">eBay</span>` : '<span style="color:#6b7280;">no</span>'}</td>
+                </tr>
+            `).join('');
+            const truncated = filtered.length > max ? `<tr><td colspan="5" style="text-align:center; color:#6b7280; padding:12px;">${filtered.length - max} more rows hidden. Use filters to narrow.</td></tr>` : '';
+            document.getElementById('planRows').innerHTML = rows + truncated;
+        }
+
+        function labelFor(action) {
+            return { skip: 'Skip', convert_divider: 'Convert', generate_fresh: 'New SKU' }[action] || action;
+        }
+
+        function escapeHtml(s) {
+            return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        async function execute() {
+            const eligible = lastPlan.filter(p => p.action !== 'skip').length;
+            if (!eligible) { alert('Nothing to execute — all items already proper or staged.'); return; }
+            const ebayHits = lastPlan.filter(p => p.action !== 'skip' && p.hasEbayListing).length;
+            const msg = `Rename ${eligible} items?\n\n${ebayHits} of those have eBay listings — their eBay SKUs will be updated via Trading API.\nIf eBay rejects a rename, that item's local SKU stays unchanged.\n\nThis cannot be undone in bulk.`;
+            if (!confirm(msg)) return;
+
+            const btn = document.getElementById('executeBtn');
+            btn.disabled = true; btn.textContent = 'Running… (may take a few minutes)';
+            try {
+                const resp = await fetch('/api/admin/convert/execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: savedPassword })
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.error || 'Execution failed');
+                showResults(data);
+                // Refresh preview to confirm
+                await loadPreview();
+            } catch (err) {
+                alert('Execution failed: ' + err.message);
+            } finally {
+                btn.disabled = false; btn.textContent = 'Execute Conversion';
+            }
+        }
+
+        function showResults(data) {
+            const block = document.getElementById('resultsBlock');
+            block.style.display = 'block';
+            document.getElementById('resultsStats').innerHTML = [
+                stat('Renamed', data.summary.renamed, '#4ade80'),
+                stat('Skipped', data.summary.skipped, '#6b7280'),
+                stat('Failed', data.summary.failed, '#fca5a5')
+            ].join('');
+            const failedHtml = data.results.failed.length
+                ? `<h3 style="color:#fca5a5; font-size:0.85rem; text-transform:uppercase; margin:10px 0;">Failures</h3>
+                   <ul style="margin:0; padding-left:20px; color:#fca5a5; font-size:0.85rem;">${
+                       data.results.failed.map(f => `<li><code>${f.sku}</code> → <code>${f.target}</code>: ${escapeHtml(f.error)}</li>`).join('')
+                   }</ul>`
+                : '';
+            document.getElementById('failedList').innerHTML = failedHtml;
+        }
+    </script>
+</body>
+</html>

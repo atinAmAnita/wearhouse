@@ -172,6 +172,26 @@ const data = {
         return item;
     },
 
+    // Rename an item's SKU + apply other field updates atomically.
+    // Throws if newSku already exists or source item missing.
+    async renameItem(oldSku, newSku, additionalFields = {}) {
+        if (oldSku === newSku) return null;
+        if (!USE_LOCAL_DB) {
+            const existing = await db.inventory.getItem(newSku);
+            if (existing) throw new Error(`Target SKU ${newSku} already exists`);
+            return db.inventory.update(oldSku, { sku: newSku, ...additionalFields });
+        }
+        if (localInventory.items[newSku]) throw new Error(`Target SKU ${newSku} already exists`);
+        const item = localInventory.items[oldSku];
+        if (!item) throw new Error(`Source SKU ${oldSku} not found`);
+        item.sku = newSku;
+        Object.assign(item, additionalFields, { lastModified: new Date().toISOString() });
+        localInventory.items[newSku] = item;
+        delete localInventory.items[oldSku];
+        saveLocalData();
+        return item;
+    },
+
     async getAllItemCodes() {
         if (!USE_LOCAL_DB) {
             return db.inventory.getAllItemCodes();
@@ -812,6 +832,43 @@ const ebayAPI = {
         }
 
         return { success: true, ack };
+    },
+
+    // Rename an eBay listing's SKU (Trading API ReviseFixedPriceItem with <SKU>)
+    // ebayItemId stays the same — only the SKU label changes.
+    async reviseItemSku(accountId, ebayItemId, newSku) {
+        const account = await this.ensureFreshToken(accountId);
+        const token = account.tokens.access_token;
+        const endpoint = config.ebay.environment === 'production'
+            ? 'https://api.ebay.com/ws/api.dll'
+            : 'https://api.sandbox.ebay.com/ws/api.dll';
+        const body = `<?xml version="1.0" encoding="utf-8"?>
+<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+    <RequesterCredentials><eBayAuthToken>${token}</eBayAuthToken></RequesterCredentials>
+    <Item>
+        <ItemID>${ebayItemId}</ItemID>
+        <SKU>${this.escapeXml(newSku)}</SKU>
+    </Item>
+    <ErrorLanguage>en_US</ErrorLanguage>
+    <WarningLevel>High</WarningLevel>
+</ReviseFixedPriceItemRequest>`;
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'text/xml',
+                'X-EBAY-API-SITEID': '0',
+                'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+                'X-EBAY-API-CALL-NAME': 'ReviseFixedPriceItem',
+                'X-EBAY-API-IAF-TOKEN': token
+            },
+            body
+        });
+        const xmlText = await response.text();
+        const parsed = this.parseEbayResponse(xmlText);
+        if (parsed.ack === 'Failure' && parsed.errors.length > 0) {
+            throw new Error(parsed.errors.join('; '));
+        }
+        return { success: true, ack: parsed.ack };
     },
 
     // Create a new listing via Trading API (AddFixedPriceItem)
@@ -2253,9 +2310,9 @@ app.post('/api/updates/:id/apply', ah(async (req, res) => {
             const descChange = changes.find(c => c.field === 'description');
             if (!skuChange) throw new HttpError(400, 'SKU change data missing');
             const newSku = skuChange.newValue;
-            const newItemCode = newSku.substring(0, 4);
-            const newDrawer = newSku.substring(4, 7);
-            const newPosition = newSku.substring(7);
+            const newItemCode = newSku.substring(0, 6);
+            const newDrawer = newSku.substring(6, 9);
+            const newPosition = newSku.substring(9);
             const newItem = {
                 sku: newSku, itemCode: newItemCode, drawerNumber: newDrawer, positionNumber: newPosition, fullLocation: `${newDrawer}-${newPosition}`,
                 price: oldItem.price, currentQty: oldItem.currentQty,
@@ -2330,8 +2387,8 @@ app.get('/api/check-item/:itemId', async (req, res) => {
 app.get('/api/next-item-id', async (req, res) => {
     try {
         const usedIds = new Set(await data.getAllItemCodes());
-        for (let i = 1; i <= 9999; i++) {
-            const id = String(i).padStart(4, '0');
+        for (let i = 1; i <= 999999; i++) {
+            const id = String(i).padStart(6, '0');
             if (!usedIds.has(id)) return res.json({ nextId: id });
         }
         res.status(400).json({ error: 'No available Item IDs' });
@@ -2343,11 +2400,13 @@ app.get('/api/next-item-id', async (req, res) => {
 app.get('/api/next-location', async (req, res) => {
     try {
         const usedLocations = new Set(await data.getAllLocations());
-        for (let drawer = 1; drawer <= 999; drawer++) {
-            for (let position = 1; position <= 99; position++) {
-                const location = String(drawer).padStart(3, '0') + String(position).padStart(2, '0');
+        for (let drawer = 0; drawer <= 999; drawer++) {
+            for (let position = 1; position <= 9999; position++) {
+                const drawerStr = String(drawer).padStart(3, '0');
+                const positionStr = String(position).padStart(4, '0');
+                const location = drawerStr + positionStr;
                 if (!usedLocations.has(location)) {
-                    return res.json({ nextLocation: location, drawer: String(drawer).padStart(3, '0'), position: String(position).padStart(2, '0') });
+                    return res.json({ nextLocation: location, drawer: drawerStr, position: positionStr });
                 }
             }
         }
@@ -2360,11 +2419,11 @@ app.get('/api/next-location', async (req, res) => {
 app.post('/api/inventory', async (req, res) => {
     try {
         const { itemId, drawer, position, price = 0, quantity = 1, description = '' } = req.body;
-        if (!itemId || !drawer || !position) return res.status(400).json({ error: 'Item ID, drawer, and position are required' });
-        if (!/^\d{4}$/.test(itemId)) return res.status(400).json({ error: 'Item ID must be exactly 4 digits' });
+        if (!itemId || !drawer || position == null || position === '') return res.status(400).json({ error: 'Item ID, drawer, and position are required' });
+        if (!/^\d{6}$/.test(itemId)) return res.status(400).json({ error: 'Item ID must be exactly 6 digits' });
 
         const drawerStr = String(drawer).padStart(3, '0');
-        const positionStr = String(position).padStart(2, '0');
+        const positionStr = String(position).padStart(4, '0');
         const fullLocation = `${drawerStr}-${positionStr}`;
         const sku = `${itemId}${drawerStr}${positionStr}`;
         const qtyToAdd = parseInt(quantity);
@@ -2527,9 +2586,9 @@ app.post('/api/inventory/:sku/change-sku', async (req, res) => {
             return res.status(400).json({ error: 'An item with this SKU already exists' });
         }
 
-        // Parse new SKU components
-        const newItemCode = newSku.substring(0, 4);
-        const newLocation = newSku.substring(4);
+        // Parse new SKU components (6 itemCode + 3 drawer + 4 position = 13 digits)
+        const newItemCode = newSku.substring(0, 6);
+        const newLocation = newSku.substring(6);
         const newDrawer = newLocation.substring(0, 3);
         const newPosition = newLocation.substring(3);
         const newFullLocation = `${newDrawer}-${newPosition}`;
@@ -3305,6 +3364,156 @@ app.post('/api/admin/debug', ah(async (req, res) => {
         }
     });
 }));
+
+// ============================================
+// SKU CONVERTER — one-shot tool to normalize all SKUs to the standard 13-digit format
+// ============================================
+// Standard format: <6-digit itemCode><3-digit drawer><4-digit position>
+//
+// Rules (per item):
+//   - Already 13 digits all-numeric → SKIP
+//   - Staged item (CREATE pending) → SKIP (not committed yet)
+//   - Contains literal "000" substring → split: before=itemCode, after=position, drawer=000
+//   - Otherwise → generate fresh: smallest unused 6-digit itemCode, drawer=000, smallest unused position
+//
+// If item has an eBay listing, the new SKU is pushed to eBay via ReviseFixedPriceItem.
+// If eBay push fails → don't rename local (invariant preserved).
+
+function classifySku(item, usedItemCodes, usedPositionsInDefaultDrawer, plannedNewSkus, fitItemCodes) {
+    const sku = item.sku;
+    // Already proper
+    if (/^\d{13}$/.test(sku)) {
+        return { action: 'skip', reason: 'already standard format' };
+    }
+    // Staged items are CREATE pending — leave alone
+    if (item.staged) {
+        return { action: 'skip', reason: 'staged (CREATE pending)' };
+    }
+    // Has "000" divider — convert
+    const dividerIdx = sku.indexOf('000');
+    if (dividerIdx > 0) {
+        const before = sku.substring(0, dividerIdx);
+        const after = sku.substring(dividerIdx + 3);
+        if (/^\d+$/.test(before) && /^\d+$/.test(after) && before.length <= 6 && after.length <= 4) {
+            const newItemCode = before.padStart(6, '0');
+            const newPosition = after.padStart(4, '0');
+            const newSku = newItemCode + '000' + newPosition;
+            if (!plannedNewSkus.has(newSku)) {
+                plannedNewSkus.add(newSku);
+                return { action: 'convert_divider', newSku, newItemCode, newDrawer: '000', newPosition };
+            }
+            // collision — fall through to generate_fresh
+        }
+    }
+    // Generate fresh: next unused itemCode + next unused position in drawer 000
+    let nextCode = fitItemCodes.last || 0;
+    while (true) {
+        nextCode++;
+        if (nextCode > 999999) throw new Error('Ran out of 6-digit item codes');
+        const padded = String(nextCode).padStart(6, '0');
+        if (!usedItemCodes.has(padded)) {
+            fitItemCodes.last = nextCode;
+            usedItemCodes.add(padded);
+            // Position in drawer 000
+            let nextPos = fitItemCodes.lastPos || 0;
+            while (true) {
+                nextPos++;
+                if (nextPos > 9999) throw new Error('Ran out of positions in drawer 000');
+                const paddedPos = String(nextPos).padStart(4, '0');
+                if (!usedPositionsInDefaultDrawer.has(paddedPos)) {
+                    fitItemCodes.lastPos = nextPos;
+                    usedPositionsInDefaultDrawer.add(paddedPos);
+                    const newSku = padded + '000' + paddedPos;
+                    plannedNewSkus.add(newSku);
+                    return { action: 'generate_fresh', newSku, newItemCode: padded, newDrawer: '000', newPosition: paddedPos };
+                }
+            }
+        }
+    }
+}
+
+function buildConvertPlan(allItems) {
+    // Pre-compute occupied sets (only proper items + non-staged hold real codes/positions)
+    const usedItemCodes = new Set();
+    const usedPositionsInDefaultDrawer = new Set();
+    for (const item of allItems) {
+        if (/^\d{13}$/.test(item.sku)) {
+            usedItemCodes.add(item.sku.substring(0, 6));
+            if (item.sku.substring(6, 9) === '000') {
+                usedPositionsInDefaultDrawer.add(item.sku.substring(9));
+            }
+        }
+    }
+    const plannedNewSkus = new Set();
+    const fitItemCodes = { last: 0, lastPos: 0 };
+    const plan = [];
+    for (const item of allItems) {
+        const result = classifySku(item, usedItemCodes, usedPositionsInDefaultDrawer, plannedNewSkus, fitItemCodes);
+        plan.push({
+            sku: item.sku,
+            description: item.description || '',
+            hasEbayListing: !!item.ebaySync?.ebayItemId,
+            ebayItemId: item.ebaySync?.ebayItemId || null,
+            ebayAccountId: item.ebaySync?.ebayAccountId || null,
+            ...result
+        });
+    }
+    return plan;
+}
+
+app.post('/api/admin/convert/preview', ah(async (req, res) => {
+    if (req.body.password !== config.adminPassword) throw new HttpError(401, 'Invalid password');
+    const items = await data.getAllItemsRaw();
+    const plan = buildConvertPlan(items);
+    const summary = {
+        total: plan.length,
+        skip: plan.filter(p => p.action === 'skip').length,
+        convertDivider: plan.filter(p => p.action === 'convert_divider').length,
+        generateFresh: plan.filter(p => p.action === 'generate_fresh').length,
+        withEbayListing: plan.filter(p => p.hasEbayListing && p.action !== 'skip').length
+    };
+    res.json({ summary, plan });
+}));
+
+app.post('/api/admin/convert/execute', ah(async (req, res) => {
+    if (req.body.password !== config.adminPassword) throw new HttpError(401, 'Invalid password');
+    const items = await data.getAllItemsRaw();
+    const plan = buildConvertPlan(items);
+
+    const results = { renamed: [], skipped: [], failed: [] };
+    for (const step of plan) {
+        if (step.action === 'skip') {
+            results.skipped.push({ sku: step.sku, reason: step.reason });
+            continue;
+        }
+        try {
+            // Push to eBay first if linked — invariant: if eBay fails, local doesn't change
+            if (step.hasEbayListing && step.ebayAccountId) {
+                await ebayAPI.reviseItemSku(step.ebayAccountId, step.ebayItemId, step.newSku);
+            }
+            // Rename local
+            const fullLocation = `${step.newDrawer}-${step.newPosition}`;
+            await data.renameItem(step.sku, step.newSku, {
+                itemCode: step.newItemCode,
+                drawerNumber: step.newDrawer,
+                positionNumber: step.newPosition,
+                fullLocation
+            });
+            await data.addHistory(step.newSku, {
+                date: new Date(), action: 'SKU_CHANGE', qty: 0, newTotal: 0,
+                note: `Converted by SKU normalizer: ${step.sku} → ${step.newSku}`
+            });
+            results.renamed.push({ from: step.sku, to: step.newSku, action: step.action });
+        } catch (err) {
+            results.failed.push({ sku: step.sku, target: step.newSku, error: err.message });
+        }
+    }
+    console.log(`[convert] renamed=${results.renamed.length} skipped=${results.skipped.length} failed=${results.failed.length}`);
+    res.json({ ranAt: new Date().toISOString(), summary: { renamed: results.renamed.length, skipped: results.skipped.length, failed: results.failed.length }, results });
+}));
+
+app.get('/convert', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'convert.html')); });
+
 app.post('/api/admin/login', (req, res) => {
     if (req.body.password === config.adminPassword) {
         res.json({ success: true });
