@@ -97,6 +97,10 @@
 
     <div id="content" style="display:none;">
         <div class="toolbar">
+            <label style="color:#94a3b8; font-size:0.85rem;">Account:</label>
+            <select id="accountFilter" onchange="onAccountChange()" style="padding:6px 10px; background:#2a2a2a; border:1px solid #444; color:#ddd; border-radius:4px; font-size:0.9rem;">
+                <option value="all">All accounts</option>
+            </select>
             <button onclick="analyze()" id="analyzeBtn">Re-analyze</button>
             <span class="snapshot-at" id="snapshotAt"></span>
         </div>
@@ -158,12 +162,30 @@
     <script>
         let savedPassword = '';
         let lastPlan = [];
+        let selectedAccountId = 'all';
 
         const categoryMap = {
             skip:    { detailId: 'detail-skip',    countId: 'count-skip',    actions: ['skip'] },
             convert: { detailId: 'detail-convert', countId: 'count-convert', actions: ['convert_divider'] },
             fresh:   { detailId: 'detail-fresh',   countId: 'count-fresh',   actions: ['generate_fresh'] }
         };
+
+        function onAccountChange() {
+            selectedAccountId = document.getElementById('accountFilter').value;
+            analyze();
+        }
+
+        function populateAccountDropdown(accounts, totalAllAccounts) {
+            const sel = document.getElementById('accountFilter');
+            const current = selectedAccountId;
+            const opts = [`<option value="all">All accounts (${totalAllAccounts} items)</option>`];
+            for (const a of accounts) {
+                opts.push(`<option value="${a.id}">${escapeHtml(a.name)} — ${a.itemCount} item${a.itemCount === 1 ? '' : 's'}</option>`);
+            }
+            sel.innerHTML = opts.join('');
+            // Restore selection if still valid
+            if ([...sel.options].some(o => o.value === current)) sel.value = current;
+        }
 
         async function analyze() {
             const password = savedPassword || document.getElementById('passwordInput').value;
@@ -174,15 +196,17 @@
                 const resp = await fetch('/api/admin/convert/preview', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password })
+                    body: JSON.stringify({ password, accountId: selectedAccountId })
                 });
                 const data = await resp.json();
                 if (!resp.ok) throw new Error(data.error || 'Failed');
                 savedPassword = password;
                 document.getElementById('loginBox').style.display = 'none';
                 document.getElementById('content').style.display = 'block';
-                document.getElementById('snapshotAt').textContent = `Analyzed ${new Date().toLocaleString()}`;
+                const filterLabel = selectedAccountId === 'all' ? 'all accounts' : `account: ${selectedAccountId}`;
+                document.getElementById('snapshotAt').textContent = `Analyzed ${new Date().toLocaleString()} — ${filterLabel}`;
                 lastPlan = data.plan;
+                populateAccountDropdown(data.accounts || [], data.totalItemsAllAccounts || 0);
                 renderCards();
                 document.getElementById('resultsBlock').style.display = 'none';
             } catch (err) {
@@ -257,7 +281,7 @@
                 const resp = await fetch('/api/admin/convert/execute', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password: savedPassword, categories: [action] })
+                    body: JSON.stringify({ password: savedPassword, categories: [action], accountId: selectedAccountId })
                 });
                 const data = await resp.json();
                 if (!resp.ok) throw new Error(data.error || 'Failed');

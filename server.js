@@ -3482,7 +3482,30 @@ function buildConvertPlan(allItems) {
 
 app.post('/api/admin/convert/preview', ah(async (req, res) => {
     if (req.body.password !== config.adminPassword) throw new HttpError(401, 'Invalid password');
-    const items = await data.getAllItemsRaw();
+    const accountId = req.body.accountId || null; // 'all' or undefined = all; 'none' = items with no account; specific id = filter
+    const allItemsRaw = await data.getAllItemsRaw();
+
+    // Build account-list metadata first (counts per account, regardless of selected filter)
+    const allAccounts = await data.getAllAccounts();
+    const countsByAcc = new Map();
+    let noneCount = 0;
+    for (const it of allItemsRaw) {
+        const aid = it.ebaySync?.ebayAccountId;
+        if (!aid) noneCount++;
+        else countsByAcc.set(aid, (countsByAcc.get(aid) || 0) + 1);
+    }
+    const accountsForUi = allAccounts.map(a => ({
+        id: a.id, name: a.name, itemCount: countsByAcc.get(a.id) || 0
+    }));
+    // Append synthetic 'none' bucket if there are untagged items
+    if (noneCount > 0) accountsForUi.push({ id: 'none', name: 'Not assigned to any account', itemCount: noneCount });
+
+    // Apply the filter for the actual plan
+    let items = allItemsRaw;
+    if (accountId && accountId !== 'all') {
+        if (accountId === 'none') items = items.filter(i => !i.ebaySync?.ebayAccountId);
+        else items = items.filter(i => i.ebaySync?.ebayAccountId === accountId);
+    }
     const plan = buildConvertPlan(items);
     const summary = {
         total: plan.length,
@@ -3491,7 +3514,7 @@ app.post('/api/admin/convert/preview', ah(async (req, res) => {
         generateFresh: plan.filter(p => p.action === 'generate_fresh').length,
         withEbayListing: plan.filter(p => p.hasEbayListing && p.action !== 'skip').length
     };
-    res.json({ summary, plan });
+    res.json({ summary, plan, accounts: accountsForUi, totalItemsAllAccounts: allItemsRaw.length });
 }));
 
 // Convert execute: queue SKU_CHANGE pending updates — does NOT touch eBay directly.
@@ -3503,7 +3526,12 @@ app.post('/api/admin/convert/execute', ah(async (req, res) => {
     const allowedCategories = Array.isArray(req.body.categories) && req.body.categories.length > 0
         ? new Set(req.body.categories)
         : null; // null = all non-skip categories
-    const items = await data.getAllItemsRaw();
+    const accountId = req.body.accountId || null;
+    let items = await data.getAllItemsRaw();
+    if (accountId && accountId !== 'all') {
+        if (accountId === 'none') items = items.filter(i => !i.ebaySync?.ebayAccountId);
+        else items = items.filter(i => i.ebaySync?.ebayAccountId === accountId);
+    }
     const plan = buildConvertPlan(items);
 
     const pending = await data.getPendingUpdates('pending');
