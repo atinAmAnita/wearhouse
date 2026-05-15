@@ -3326,16 +3326,26 @@ app.post('/api/admin/debug', ah(async (req, res) => {
     for (const acc of accounts) {
         let ebayCount = null;
         let ebayErr = null;
+        let ebayUserId = null;
+        let ebayStoreName = null;
         if (acc.hasValidToken) {
             try {
                 const ebayData = await ebayAPI.getActiveListings(acc.id);
                 ebayCount = ebayData.totalEntries ?? ebayData.items?.length ?? 0;
             } catch (err) { ebayErr = err.message; }
+            // Fetch the real eBay seller identity so we don't have to guess from the local-typed name
+            try {
+                const userInfo = await ebayAPI.getUserInfo(acc.id);
+                ebayUserId = userInfo?.user?.userId || null;
+                ebayStoreName = userInfo?.user?.storeName || null;
+            } catch (err) { /* non-fatal — keep going */ }
         }
         const localItemsForAcc = allItems.filter(i => i.ebaySync?.ebayAccountId === acc.id);
         accountStats.push({
             id: acc.id,
             name: acc.name,
+            ebayUserId,
+            ebayStoreName,
             hasValidToken: acc.hasValidToken,
             cronEnabled: acc.cronEnabled !== false,
             lastSync: acc.lastSync,

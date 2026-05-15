@@ -128,10 +128,21 @@
                 const errLine = a.ebayFetchError
                     ? `<div class="err">eBay fetch error: ${a.ebayFetchError}</div>`
                     : '';
+                // Primary display name: the actual eBay seller ID (live from Trading API GetUser).
+                // Fallback to the local-typed nickname if we couldn't fetch it (token expired, etc.).
+                const primary = a.ebayUserId || a.name || '(unnamed)';
+                const subtitle = a.ebayUserId
+                    ? `Local nickname: ${a.name}`
+                    : `Local nickname only — eBay user ID unavailable`;
+                const storeLine = a.ebayStoreName
+                    ? `<div class="meta">eBay store: ${a.ebayStoreName}</div>`
+                    : '';
                 return `
                     <div class="account-card">
-                        <div class="name">${a.name} ${tokenBadge} ${cronBadge}</div>
-                        <div class="meta">ID: ${a.id}</div>
+                        <div class="name">${primary} ${tokenBadge} ${cronBadge}</div>
+                        <div class="meta">${subtitle}</div>
+                        ${storeLine}
+                        <div class="meta">Account ID: ${a.id}</div>
                         <div class="meta">Last sync: ${a.lastSync ? new Date(a.lastSync).toLocaleString() : 'Never'}</div>
                         <div class="row"><span>eBay listings (live)</span><strong>${a.ebayListingsCount ?? 'n/a'}</strong></div>
                         <div class="row"><span>Local items tagged to this account</span><strong>${a.localItemsTagged}</strong></div>
