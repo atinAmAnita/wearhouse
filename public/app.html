@@ -237,10 +237,27 @@
                 </div>
             </div>
             <p style="color: var(--text-muted); margin-bottom: 20px;">Changes made to your inventory that haven't been synced to eBay yet.</p>
+            <div class="inventory-controls" style="margin-bottom: 12px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                <input type="text" id="updatesSearch" placeholder="Search SKU or description..." oninput="Updates.applyFilters()" style="flex:1; min-width:200px; padding:8px; background:var(--bg-input,#1a1a1a); border:1px solid #444; color:#ddd; border-radius:4px;">
+                <select id="updatesTypeFilter" class="styled-select" onchange="Updates.applyFilters()">
+                    <option value="all">All types</option>
+                    <option value="CREATE">CREATE only</option>
+                    <option value="UPDATE">UPDATE only</option>
+                    <option value="DELETE">DELETE only</option>
+                    <option value="SKU_CHANGE">SKU_CHANGE only</option>
+                </select>
+                <select id="updatesAgeFilter" class="styled-select" onchange="Updates.applyFilters()">
+                    <option value="all">All ages</option>
+                    <option value="recent">≤ 7 days</option>
+                    <option value="stale">≥ 7 days</option>
+                    <option value="very-stale">≥ 30 days</option>
+                </select>
+                <span id="updatesVisibleCount" style="color:var(--text-muted); font-size:0.85rem;"></span>
+            </div>
             <div class="inventory-controls" style="margin-bottom: 20px;">
                 <button class="btn btn-secondary" onclick="Updates.load()">Refresh</button>
-                <button class="btn btn-success" id="applyAllBtn" onclick="Updates.applyAll()" style="background:#2e7d32;color:#fff;">Apply All</button>
-                <button class="btn btn-danger" onclick="Updates.dismissAll()">Dismiss All</button>
+                <button class="btn btn-success" id="applyAllBtn" onclick="Updates.applyAll()" style="background:#2e7d32;color:#fff;" title="Applies the filtered list. If filters are set, only those are applied.">Apply Filtered</button>
+                <button class="btn btn-danger" onclick="Updates.dismissAll()" title="Dismisses the filtered list. If filters are set, only those are dismissed.">Dismiss Filtered</button>
             </div>
             <div id="updatesEmpty" class="updates-empty hidden">
                 <div style="font-size: 48px; margin-bottom: 10px; opacity: 0.3;">&#10003;</div>

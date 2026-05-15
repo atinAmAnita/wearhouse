@@ -2784,18 +2784,21 @@ app.post('/api/cron/sync-all-accounts', ah(async (req, res) => {
             continue;
         }
         try {
-            const syncResult = await withEbayLock(account.id, 'cron-sync', () => ebayAPI.smartSyncAll(account.id));
+            // Cron is PULL-ONLY: detect eBay-side changes (sales, edits) and update local.
+            // Never pushes to eBay — that's reserved for explicit user actions (Apply / Push / Publish).
+            const pullResult = await withEbayLock(account.id, 'cron-pull', () => ebayAPI.pullFromEbay(account.id));
+            // Count sales by scanning history entries (pullFromEbay logs EBAY_SALE inline; not in result shape)
+            const salesDetected = (pullResult.updated || []).filter(u => Array.isArray(u.fields) && u.fields.includes('quantity')).length;
             results.push({
                 accountId: account.id,
                 account: account.name,
                 status: 'synced',
-                imported: syncResult.imported.length,
-                exported: syncResult.exported.length,
-                updated: syncResult.updated.length,
-                sales: syncResult.sales.length,
-                skipped: (syncResult.skipped || []).length,
-                errors: syncResult.errors.length,
-                errorSamples: (syncResult.errors || []).slice(0, 3).map(e => ({ sku: e.sku, error: (e.error || '').slice(0, 200) }))
+                imported: (pullResult.created || []).length,
+                updated: (pullResult.updated || []).length,
+                salesDetected,
+                skipped: (pullResult.skipped || []).length,
+                errors: (pullResult.errors || []).length,
+                errorSamples: (pullResult.errors || []).slice(0, 3).map(e => ({ sku: e.sku, error: (e.error || '').slice(0, 200) }))
             });
         } catch (err) {
             // 409 (manual sync in progress) is expected and not an error

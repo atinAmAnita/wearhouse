@@ -1908,11 +1908,41 @@ const Updates = {
         }
     },
 
+    // Compute the currently-filtered list from search + type + age
+    getFiltered() {
+        const q = (UI.el('updatesSearch')?.value || '').trim().toLowerCase();
+        const typeFilter = UI.el('updatesTypeFilter')?.value || 'all';
+        const ageFilter = UI.el('updatesAgeFilter')?.value || 'all';
+        const now = Date.now();
+        return (this.allUpdates || []).filter(u => {
+            if (typeFilter !== 'all' && u.updateType !== typeFilter) return false;
+            if (q) {
+                const hay = `${u.sku || ''} ${u.description || ''}`.toLowerCase();
+                if (!hay.includes(q)) return false;
+            }
+            if (ageFilter !== 'all' && u.createdAt) {
+                const ageDays = (now - new Date(u.createdAt).getTime()) / 86400000;
+                if (ageFilter === 'recent' && ageDays > 7) return false;
+                if (ageFilter === 'stale' && ageDays < 7) return false;
+                if (ageFilter === 'very-stale' && ageDays < 30) return false;
+            }
+            return true;
+        });
+    },
+
+    applyFilters() { this.render(); },
+
     render() {
         const tbody = document.querySelector('#updatesTable tbody');
         if (!tbody) return;
 
         const emptyEl = UI.el('updatesEmpty');
+        const filtered = this.getFiltered();
+        const countEl = UI.el('updatesVisibleCount');
+        if (countEl) countEl.textContent = filtered.length === this.allUpdates.length
+            ? `${filtered.length} updates`
+            : `Showing ${filtered.length} of ${this.allUpdates.length}`;
+
         if (this.allUpdates.length === 0) {
             tbody.innerHTML = '';
             if (emptyEl) UI.show(emptyEl);
@@ -1920,7 +1950,12 @@ const Updates = {
         }
         if (emptyEl) UI.hide(emptyEl);
 
-        tbody.innerHTML = this.allUpdates.map(update => {
+        if (filtered.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:30px;">No updates match the current filters.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = filtered.map(update => {
             const typeColors = {
                 'CREATE': { bg: '#1b5e20', color: '#a5d6a7' },
                 'UPDATE': { bg: '#0d47a1', color: '#90caf9' },
@@ -2025,20 +2060,22 @@ const Updates = {
             UI.notify('Please select an eBay account first (eBay Sync tab)', 'error');
             return;
         }
-        if (!this.allUpdates?.length) {
-            UI.notify('No pending updates to apply', 'info');
+        const targets = this.getFiltered();
+        if (!targets.length) {
+            UI.notify('No updates match the current filters', 'info');
             return;
         }
-        const total = this.allUpdates.length;
-        if (!UI.confirm(`Apply all ${total} pending updates?\n\nEach will push to eBay. Conflicts stay in queue.`)) return;
+        const total = targets.length;
+        const allCount = this.allUpdates.length;
+        const scopeMsg = total === allCount ? `all ${total}` : `${total} filtered (of ${allCount})`;
+        if (!UI.confirm(`Apply ${scopeMsg} pending updates?\n\nEach will push to eBay. Conflicts stay in queue.`)) return;
 
         const btn = UI.el('applyAllBtn');
         if (btn) { btn.disabled = true; btn.textContent = `Applying 0/${total}...`; }
 
-        const snapshot = [...this.allUpdates]; // freeze list — apply() mutates allUpdates
         let applied = 0, skipped = 0, failed = 0;
-        for (let i = 0; i < snapshot.length; i++) {
-            const u = snapshot[i];
+        for (let i = 0; i < targets.length; i++) {
+            const u = targets[i];
             if (btn) btn.textContent = `Applying ${i + 1}/${total}...`;
             try {
                 const result = await this.apply(u._id);
@@ -2050,7 +2087,7 @@ const Updates = {
             }
         }
 
-        if (btn) { btn.disabled = false; btn.textContent = 'Apply All'; }
+        if (btn) { btn.disabled = false; btn.textContent = 'Apply Filtered'; }
         const parts = [];
         if (applied) parts.push(`${applied} applied`);
         if (skipped) parts.push(`${skipped} skipped (conflicts or in-progress)`);
@@ -2059,16 +2096,38 @@ const Updates = {
     },
 
     async dismissAll() {
-        if (!UI.confirm('Dismiss all pending updates? This cannot be undone.')) return;
-        try {
-            await API.updates.dismissAll();
-            this.allUpdates = [];
-            this.render();
-            this.refreshBadge();
-            UI.notify('All updates dismissed', 'success');
-        } catch (err) {
-            UI.notify(err.message, 'error');
+        const targets = this.getFiltered();
+        if (!targets.length) {
+            UI.notify('No updates match the current filters', 'info');
+            return;
         }
+        const total = targets.length;
+        const allCount = this.allUpdates.length;
+        // If user dismissed everything, use the bulk endpoint; otherwise dismiss one-by-one
+        if (total === allCount) {
+            if (!UI.confirm(`Dismiss all ${total} pending updates? This cannot be undone.`)) return;
+            try {
+                await API.updates.dismissAll();
+                this.allUpdates = [];
+                this.render();
+                this.refreshBadge();
+                UI.notify(`Dismissed ${total} updates`, 'success');
+            } catch (err) {
+                UI.notify('Failed to dismiss: ' + err.message, 'error');
+            }
+            return;
+        }
+        if (!UI.confirm(`Dismiss ${total} filtered updates (of ${allCount})? This cannot be undone.`)) return;
+        let dismissed = 0, failed = 0;
+        for (const u of targets) {
+            try {
+                await API.updates.dismiss(u._id);
+                dismissed++;
+            } catch (_) { failed++; }
+        }
+        // Reload from server to get a clean state
+        await this.load();
+        UI.notify(`Dismissed ${dismissed} updates${failed ? `, ${failed} failed` : ''}`, failed ? 'info' : 'success');
     },
 
     viewItem(sku) {
