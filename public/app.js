@@ -1405,7 +1405,24 @@ const eBay = {
         if (!opts.silent) {
             Inventory.render?.();
             Updates.applyFilters?.();
+            // eBay Sync tab shows account-specific data (inventory table, comparison
+            // results, sync results). Switching accounts must invalidate them — leaving
+            // stale data from the previous account is confusing and dangerous.
+            const ebayInvWasOpen = !UI.el('ebayInventory')?.classList.contains('hidden');
+            eBay.clearAccountScopedUI();
+            if (ebayInvWasOpen && stored) eBay.loadInventory();
         }
+    },
+
+    // Clear all eBay Sync tab UI that was scoped to a specific account.
+    clearAccountScopedUI() {
+        const tbody = document.querySelector('#ebayInventoryTable tbody');
+        if (tbody) tbody.innerHTML = '';
+        ['ebayInventory', 'comparisonResults', 'syncResults'].forEach(id => {
+            const el = UI.el(id);
+            if (el) el.classList.add('hidden');
+        });
+        this.comparisonData = null;
     },
 
     // Display sync results in the UI
