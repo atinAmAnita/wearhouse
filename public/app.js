@@ -12,6 +12,53 @@ const State = {
 };
 
 // ============================================
+// SEARCH — word-order independent, but strict per word
+// ============================================
+// "rear view mirror for toyota pickup" matches "Toyota Pick Up Mirror Rear View".
+// Rules (strict but not exact-phrase):
+//   - query split into words; filler words ("for", "the"...) dropped
+//   - EVERY remaining query word must match a word in the item — order doesn't matter
+//   - a word matches only a whole word or the START of a word ("mirr" → "mirror",
+//     but "ram" does NOT match "ceramic")
+//   - compounds handled both ways: "pickup" ↔ "pick up" (adjacent words joined)
+const Search = {
+    STOP_WORDS: new Set(['for', 'the', 'a', 'an', 'of', 'and', 'or', 'with', 'to', 'in', 'on', 'at', 'by']),
+
+    tokenize(s) {
+        return (s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
+    },
+
+    matches(text, query) {
+        const qWords = this.tokenize(query).filter(w => !this.STOP_WORDS.has(w));
+        if (qWords.length === 0) return true;
+
+        const tWords = this.tokenize(text);
+        // Add joined adjacent pairs so text "pick up" also exposes the token "pickup".
+        const tTokens = new Set(tWords);
+        for (let i = 0; i < tWords.length - 1; i++) tTokens.add(tWords[i] + tWords[i + 1]);
+
+        const wordHits = (w) => {
+            // 1-2 letter words must match a whole word exactly ("f" shouldn't hit "ford",
+            // "front", "fits"...). Prefix matching only kicks in from 3 letters ("mirr" → "mirror").
+            const allowPrefix = w.length >= 3;
+            for (const tok of tTokens) {
+                if (tok === w || (allowPrefix && tok.startsWith(w))) return true;
+            }
+            return false;
+        };
+
+        // Each query word must hit; a miss may consume the NEXT query word as a
+        // compound ("pick"+"up" → "pickup") before failing.
+        for (let i = 0; i < qWords.length; i++) {
+            if (wordHits(qWords[i])) continue;
+            if (i + 1 < qWords.length && wordHits(qWords[i] + qWords[i + 1])) { i++; continue; }
+            return false;
+        }
+        return true;
+    }
+};
+
+// ============================================
 // API - All server communication
 // ============================================
 const API = {
@@ -74,7 +121,6 @@ const API = {
     ebay: {
         getStatus: () => API.get('/api/ebay/status'),
         getInventory: (accountId) => API.get(`/api/ebay/inventory/${accountId}`),
-        getListings: (accountId) => API.get(`/api/ebay/listings/${accountId}`),
         pull: (accountId) => API.post(`/api/ebay/pull/${accountId}`),
         syncAll: (accountId) => API.post(`/api/ebay/sync-all/${accountId}`),
         publishAll: (accountId) => API.post(`/api/ebay/publish-all/${accountId}`),
@@ -197,7 +243,6 @@ const Tabs = {
 
         // Tab-specific actions
         if (tabId === 'inventory') Inventory.load();
-        if (tabId === 'advanced') Advanced.loadItems();
         if (tabId === 'ebay') eBay.loadStatus();
         if (tabId === 'updates') Updates.load();
     }
@@ -329,10 +374,10 @@ const AddItem = {
             return;
         }
 
-        // Items must be tagged to a specific account — refuse "All accounts" mode.
+        // Items must be tagged to a specific account.
         const activeAccountId = eBay.getActiveAccountId();
-        if (activeAccountId === 'all') {
-            UI.notify('Pick a specific account in the header before adding items', 'error');
+        if (!activeAccountId) {
+            UI.notify('Pick an account in the header before adding items', 'error');
             return;
         }
 
@@ -590,14 +635,6 @@ const Inventory = {
         this.load();
     },
 
-    applySort() {
-        const sortValue = UI.el('inventorySort')?.value || 'dateAdded-desc';
-        const [field, dir] = sortValue.split('-');
-        this.sortField = field;
-        this.sortDir = dir;
-        this.render();
-    },
-
     sortBy(field) {
         // Toggle direction if same field, otherwise default to asc
         if (this.sortField === field) {
@@ -651,19 +688,17 @@ const Inventory = {
     getDisplayItems() {
         let items = [...this.allItems];
 
-        // Apply search filter
+        // Apply search filter (word-order independent, see Search.matches)
         if (this.searchQuery) {
-            items = items.filter(item => {
-                const searchStr = `${item.SKU} ${item.FullLocation} ${item.Description || ''}`.toLowerCase();
-                return searchStr.includes(this.searchQuery);
-            });
+            items = items.filter(item =>
+                Search.matches(`${item.SKU} ${item.FullLocation} ${item.Description || ''}`, this.searchQuery)
+            );
         }
 
-        // Apply global account filter (header dropdown — 'all' = no filter)
+        // Account isolation: no account selected → no items shown.
         const activeAccount = eBay.getActiveAccountId();
-        if (activeAccount !== 'all') {
-            items = items.filter(i => i.EbayAccountId === activeAccount);
-        }
+        if (!activeAccount) return [];
+        items = items.filter(i => i.EbayAccountId === activeAccount);
 
         // Apply sorting
         items.sort((a, b) => {
@@ -709,10 +744,18 @@ const Inventory = {
     },
 
     render() {
+        const tbody = document.querySelector('#inventoryTable tbody');
+        // Hard guard: no account selected → empty table with a prompt row.
+        if (!eBay.getActiveAccountId()) {
+            tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:40px; color:var(--text-muted);">Pick an account in the header to view items.</td></tr>';
+            UI.setText('totalItems', '0 items');
+            UI.setText('totalQuantity', '0 total qty');
+            UI.setText('pageInfo', 'Page 1 of 1');
+            return;
+        }
         const displayItems = this.getDisplayItems();
         const totalPages = Math.ceil(displayItems.length / this.pageSize) || 1;
 
-        // Ensure current page is valid
         if (this.currentPage > totalPages) this.currentPage = totalPages;
         if (this.currentPage < 1) this.currentPage = 1;
 
@@ -720,7 +763,6 @@ const Inventory = {
         const endIdx = startIdx + this.pageSize;
         const pageItems = displayItems.slice(startIdx, endIdx);
 
-        const tbody = document.querySelector('#inventoryTable tbody');
         tbody.innerHTML = '';
 
         let totalQty = 0;
@@ -750,15 +792,15 @@ const Inventory = {
             const rowStyle = isLowStock ? 'style="background:rgba(249, 168, 37, 0.08);"' : '';
 
             row.innerHTML = `
-                <td style="width:40px;padding:4px;" ${rowStyle}>${thumb}</td>
-                <td style="text-align:center;" title="${syncTitle}">${syncIcon}</td>
-                <td>${item.SKU}</td>
-                <td>${item.FullLocation}</td>
-                <td>$${parseFloat(item.Price || 0).toFixed(2)}</td>
-                <td>${item.Quantity}${isLowStock ? ' <span style="color:#f9a825;font-size:0.8rem;">⚠ low</span>' : ''}</td>
-                <td>${item.Description || '-'}</td>
-                <td>${UI.formatDate(item.DateAdded)}</td>
-                <td class="action-cell">
+                <td class="cell-thumb" style="width:40px;padding:4px;" ${rowStyle}>${thumb}</td>
+                <td data-label="Sync" style="text-align:center;" title="${syncTitle}">${syncIcon}</td>
+                <td data-label="SKU">${item.SKU}</td>
+                <td data-label="Location">${item.FullLocation}</td>
+                <td data-label="Price">$${parseFloat(item.Price || 0).toFixed(2)}</td>
+                <td data-label="Qty">${item.Quantity}${isLowStock ? ' <span style="color:#f9a825;font-size:0.8rem;">⚠ low</span>' : ''}</td>
+                <td data-label="Description">${item.Description || '-'}</td>
+                <td data-label="Added">${UI.formatDate(item.DateAdded)}</td>
+                <td class="action-cell" data-label="Actions">
                     ${UI.actionBtn('History', `History.show('${item.SKU}')`)}
                     ${UI.actionBtn('View', `Inventory.view('${item.SKU}')`)}
                     ${UI.actionBtn('Delete', `Inventory.delete('${item.SKU}')`, 'danger')}
@@ -867,7 +909,9 @@ const History = {
         const map = {
             CREATE: 'action-create', ADD: 'action-add', ADJUST_UP: 'action-add',
             ADJUST_DOWN: 'action-remove', REMOVE: 'action-remove',
-            EBAY_SYNC: 'action-sync', MIGRATE: 'action-migrate', PRICE_CHANGE: 'action-add'
+            EBAY_SYNC: 'action-sync', MIGRATE: 'action-migrate', PRICE_CHANGE: 'action-add',
+            EBAY_SALE: 'action-remove', EBAY_SALE_REBASED: 'action-remove',
+            EBAY_IMPORT: 'action-sync', SKU_CHANGE: 'action-migrate'
         };
         return map[action] || '';
     },
@@ -875,7 +919,8 @@ const History = {
     getIcon(action) {
         const map = {
             CREATE: '+', ADD: '+', ADJUST_UP: '↑', ADJUST_DOWN: '↓',
-            REMOVE: '-', EBAY_SYNC: '↔', MIGRATE: '→', PRICE_CHANGE: '$'
+            REMOVE: '-', EBAY_SYNC: '↔', MIGRATE: '→', PRICE_CHANGE: '$',
+            EBAY_SALE: '🛒', EBAY_SALE_REBASED: '🛒', EBAY_IMPORT: '↔', SKU_CHANGE: '#'
         };
         return map[action] || '•';
     },
@@ -884,7 +929,9 @@ const History = {
         const map = {
             CREATE: 'Item Created', ADD: 'Stock Added', ADJUST_UP: 'Quantity Increased',
             ADJUST_DOWN: 'Quantity Decreased', REMOVE: 'Stock Removed',
-            EBAY_SYNC: 'Synced to eBay', MIGRATE: 'Migrated from Excel', PRICE_CHANGE: 'Price Changed'
+            EBAY_SYNC: 'Synced to eBay', MIGRATE: 'Migrated from Excel', PRICE_CHANGE: 'Price Changed',
+            EBAY_SALE: 'Sold on eBay', EBAY_SALE_REBASED: 'Sold on eBay (update rebased)',
+            EBAY_IMPORT: 'Imported from eBay', SKU_CHANGE: 'SKU Changed'
         };
         return map[action] || action;
     }
@@ -1296,32 +1343,29 @@ const eBay = {
     populateAccounts() {
         const stored = localStorage.getItem('selectedEbayAccount') || '';
         const activeAccounts = State.ebayAccounts.filter(a => a.hasValidToken);
-
-        // eBay-tab operational selector (specific account; empty = none chosen)
-        const select = UI.el('accountSelect');
-        select.innerHTML = '<option value="">-- Select Account --</option>' +
+        const optionsHtml = '<option value="">-- Select Account --</option>' +
             State.ebayAccounts.map(acc =>
                 `<option value="${acc.id}" ${!acc.hasValidToken ? 'disabled' : ''}>${acc.name}${!acc.hasValidToken ? ' (Token Expired)' : ''}</option>`
             ).join('');
 
-        // Global header selector (drives the entire app; 'all' = no filter)
-        const globalSel = UI.el('globalAccountSelect');
-        if (globalSel) {
-            globalSel.innerHTML = '<option value="all">All accounts</option>' +
-                State.ebayAccounts.map(acc =>
-                    `<option value="${acc.id}" ${!acc.hasValidToken ? 'disabled' : ''}>${acc.name}${!acc.hasValidToken ? ' (Token Expired)' : ''}</option>`
-                ).join('');
-        }
+        // Legacy eBay-tab selector is gone; guard in case it exists in an older shell.
+        const select = UI.el('accountSelect');
+        if (select) select.innerHTML = optionsHtml;
 
-        // Pick initial selection: prefer stored; else auto-pick the sole active account
+        // Global header selector — the single account control. No "All accounts".
+        const globalSel = UI.el('globalAccountSelect');
+        if (globalSel) globalSel.innerHTML = optionsHtml;
+
+        // Pick initial selection: prefer stored; else auto-pick the sole active account.
         let initial = '';
-        if (stored && [...select.options].some(o => o.value === stored && !o.disabled)) {
+        const validIds = new Set(activeAccounts.map(a => a.id));
+        if (stored && validIds.has(stored)) {
             initial = stored;
         } else if (activeAccounts.length === 1) {
             initial = activeAccounts[0].id;
         }
         eBay.setActiveAccount(initial, { silent: true });
-        select.onchange = () => eBay.setActiveAccount(select.value);
+        if (select) select.onchange = () => eBay.setActiveAccount(select.value);
 
         // List
         UI.setHTML('accountsContainer', State.ebayAccounts.map(acc => `
@@ -1367,17 +1411,16 @@ const eBay = {
         return UI.el('accountSelect')?.value || localStorage.getItem('selectedEbayAccount') || '';
     },
 
-    // Global filter driving Inventory/Updates/etc — 'all' | accountId.
+    // Active account ID — empty string when no account is selected.
+    // No "all" mode: account isolation is enforced.
     getActiveAccountId() {
-        return UI.el('globalAccountSelect')?.value || (localStorage.getItem('selectedEbayAccount') || 'all') || 'all';
+        return UI.el('globalAccountSelect')?.value || localStorage.getItem('selectedEbayAccount') || '';
     },
 
     // Single entry point for changing the active account. Mirrors both selectors,
     // persists to localStorage, updates the hint, and re-renders dependent tabs.
-    // accountId: '' or 'all' = no filter; anything else = specific account.
-    // opts.silent: skip re-rendering (used during initial populate to avoid double work).
     setActiveAccount(accountId, opts = {}) {
-        const stored = (accountId === 'all') ? '' : (accountId || '');
+        const stored = accountId || '';
         localStorage.setItem('selectedEbayAccount', stored);
 
         const opSel = UI.el('accountSelect');
@@ -1387,27 +1430,32 @@ const eBay = {
             else if (!stored) opSel.value = '';
         }
         const globalSel = UI.el('globalAccountSelect');
-        if (globalSel) globalSel.value = stored || 'all';
+        if (globalSel) globalSel.value = stored;
 
-        // Update header hint
         const hint = UI.el('globalAccountHint');
         if (hint) {
             if (!stored) {
-                hint.textContent = 'Showing all listings';
-                hint.style.color = '#6b7280';
+                hint.textContent = 'Pick an account to view items';
+                hint.style.color = '#fbbf24';
             } else {
                 const acc = State.ebayAccounts.find(a => a.id === stored);
-                hint.textContent = acc ? `Filtered to ${acc.name}` : 'Filtered to selected account';
+                hint.textContent = acc ? `Showing ${acc.name}` : 'Showing selected account';
                 hint.style.color = '#f97316';
             }
+        }
+        // Show the "pick an account" banner only when nothing is selected.
+        const banner = UI.el('noAccountBanner');
+        if (banner) banner.classList.toggle('hidden', !!stored);
+        // Reflect the active account on the eBay Sync tab (the per-tab dropdown is gone).
+        const opLabel = UI.el('ebayActiveAccountLabel');
+        if (opLabel) {
+            const acc = State.ebayAccounts.find(a => a.id === stored);
+            opLabel.textContent = stored ? (acc ? acc.name : 'selected account') : 'none — pick one above';
         }
 
         if (!opts.silent) {
             Inventory.render?.();
             Updates.applyFilters?.();
-            // eBay Sync tab shows account-specific data (inventory table, comparison
-            // results, sync results). Switching accounts must invalidate them — leaving
-            // stale data from the previous account is confusing and dangerous.
             const ebayInvWasOpen = !UI.el('ebayInventory')?.classList.contains('hidden');
             eBay.clearAccountScopedUI();
             if (ebayInvWasOpen && stored) eBay.loadInventory();
@@ -1499,19 +1547,15 @@ const eBay = {
             pendingCount = (updatesData.updates || []).length;
         } catch (_) { /* ignore */ }
 
-        let msg = `DANGER: Pull from "${account?.name}" will OVERWRITE your local database with eBay values.\n\n`;
-        if (pendingCount > 0) {
-            msg += `⚠ You have ${pendingCount} pending updates that will be DISCARDED.\n\n`;
-            msg += `Consider using "Compare with eBay" instead to review changes safely.\n\n`;
-        }
-        msg += `Type YES to confirm (case-sensitive):`;
-        const typed = prompt(msg);
-        if (typed !== 'YES') {
+        let msg = `Refresh local data from "${account?.name}" with eBay's current state?\n\n`;
+        msg += `This is safe: eBay sales are recorded, and eBay values are only applied to fields you haven't changed locally. Your pending updates are kept.`;
+        if (pendingCount > 0) msg += `\n\n(${pendingCount} pending update${pendingCount === 1 ? '' : 's'} will remain in the Updates tab.)`;
+        if (!confirm(msg)) {
             UI.notify('Pull cancelled', 'info');
             return;
         }
 
-        UI.notify('Pulling from eBay (overwriting local)...', 'info');
+        UI.notify('Refreshing from eBay...', 'info');
         const btn = UI.el('pullBtn');
         if (btn) { btn.disabled = true; btn.textContent = 'Pulling...'; }
         const startTime = Date.now();
@@ -1525,7 +1569,7 @@ const eBay = {
             UI.notify(err.message, err.message?.includes('Sync already in progress') ? 'warning' : 'error');
         } finally {
             setTimeout(() => {
-                if (btn) { btn.disabled = false; btn.textContent = 'Pull from eBay (Overwrite)'; }
+                if (btn) { btn.disabled = false; btn.textContent = 'Pull from eBay (Refresh)'; }
             }, Math.max(0, 2000 - (Date.now() - startTime)));
         }
     },
@@ -1584,11 +1628,6 @@ const eBay = {
                 if (btn) { btn.disabled = false; btn.innerHTML = '<span style="font-size: 1.2em;">&#8596;</span> Smart Sync'; }
             }, Math.max(0, 2000 - (Date.now() - startTime)));
         }
-    },
-
-    // Legacy function for backwards compatibility
-    async syncAll() {
-        return eBay.sync();
     },
 
     async publishAll() {
@@ -1976,24 +2015,22 @@ const Updates = {
 
     // Compute the currently-filtered list from search + type + age + active account
     getFiltered() {
+        const activeAccount = eBay.getActiveAccountId();
+        if (!activeAccount) return [];
         const q = (UI.el('updatesSearch')?.value || '').trim().toLowerCase();
         const typeFilter = UI.el('updatesTypeFilter')?.value || 'all';
         const ageFilter = UI.el('updatesAgeFilter')?.value || 'all';
-        const activeAccount = eBay.getActiveAccountId();
         const now = Date.now();
         return (this.allUpdates || []).filter(u => {
+            if (u.ebayAccountId !== activeAccount) return false;
             if (typeFilter !== 'all' && u.updateType !== typeFilter) return false;
-            if (q) {
-                const hay = `${u.sku || ''} ${u.description || ''}`.toLowerCase();
-                if (!hay.includes(q)) return false;
-            }
+            if (q && !Search.matches(`${u.sku || ''} ${u.description || ''}`, q)) return false;
             if (ageFilter !== 'all' && u.createdAt) {
                 const ageDays = (now - new Date(u.createdAt).getTime()) / 86400000;
                 if (ageFilter === 'recent' && ageDays > 7) return false;
                 if (ageFilter === 'stale' && ageDays < 7) return false;
                 if (ageFilter === 'very-stale' && ageDays < 30) return false;
             }
-            if (activeAccount !== 'all' && u.ebayAccountId !== activeAccount) return false;
             return true;
         });
     },
@@ -2010,6 +2047,9 @@ const Updates = {
         if (countEl) countEl.textContent = filtered.length === this.allUpdates.length
             ? `${filtered.length} updates`
             : `Showing ${filtered.length} of ${this.allUpdates.length}`;
+        // Keep the "N pending" badge in sync after single apply/dismiss (not just on load()).
+        const pendingEl = UI.el('pendingCount');
+        if (pendingEl) pendingEl.textContent = `${this.allUpdates.length} pending`;
 
         if (this.allUpdates.length === 0) {
             tbody.innerHTML = '';
@@ -2028,11 +2068,23 @@ const Updates = {
                 'CREATE': { bg: '#1b5e20', color: '#a5d6a7' },
                 'UPDATE': { bg: '#0d47a1', color: '#90caf9' },
                 'DELETE': { bg: '#b71c1c', color: '#ef9a9a' },
-                'SKU_CHANGE': { bg: '#e65100', color: '#ffcc80' }
+                'SKU_CHANGE': { bg: '#e65100', color: '#ffcc80' },
+                'RECONCILE': { bg: '#78350f', color: '#fbbf24' }
             };
             const tc = typeColors[update.updateType] || { bg: '#333', color: '#ccc' };
 
             const changesHtml = (update.changes || []).map(c => {
+                // Drift flagged by the daily reconciliation check.
+                if (update.updateType === 'RECONCILE') {
+                    return `<span class="change-tag change-tag-delete">⚠ Local <strong>${this.fmtVal(c.oldValue)}</strong> vs eBay <strong>${this.fmtVal(c.newValue)}</strong> — needs resolution</span>`;
+                }
+                // Stock movement (delta): show as a signed change that composes with eBay sales.
+                if (c.delta !== undefined && c.delta !== null) {
+                    const sign = c.delta >= 0 ? '+' : '';
+                    const cls = c.delta >= 0 ? 'change-tag' : 'change-tag change-tag-delete';
+                    const verb = c.delta >= 0 ? 'received' : 'removed';
+                    return `<span class="${cls}">${c.field}: <strong>${sign}${c.delta}</strong> (${verb}, applied on top of live eBay)</span>`;
+                }
                 if (update.updateType === 'CREATE') {
                     return `<span class="change-tag">${c.field}: <strong>${this.fmtVal(c.newValue)}</strong></span>`;
                 }
@@ -2053,14 +2105,20 @@ const Updates = {
             }
             const id = update._id;
 
+            // RECONCILE: Apply = accept eBay's count; Dismiss = keep local as-is.
+            const isReconcile = update.updateType === 'RECONCILE';
+            const applyLabel = isReconcile ? 'Accept eBay' : 'Update';
+            const applyTitle = isReconcile ? "Set local quantity to eBay's count (no push to eBay)" : 'Apply this change to eBay';
+            const dismissLabel = isReconcile ? 'Keep local' : 'Dismiss';
+
             return `<tr>
-                <td style="white-space: nowrap; font-size: 0.85rem;">${time}${ageBadge}</td>
-                <td><strong>${update.sku}</strong></td>
-                <td><span class="type-badge" style="background: ${tc.bg}; color: ${tc.color};">${update.updateType}</span></td>
-                <td>${changesHtml}</td>
-                <td style="white-space: nowrap;">
-                    <button class="btn btn-sm btn-success" onclick="Updates.apply('${id}')" style="background:#2e7d32;color:#fff;">Update</button>
-                    <button class="btn btn-sm btn-secondary" onclick="Updates.dismiss('${id}')">Dismiss</button>
+                <td data-label="Time" style="white-space: nowrap; font-size: 0.85rem;">${time}${ageBadge}</td>
+                <td data-label="SKU"><strong>${update.sku}</strong></td>
+                <td data-label="Type"><span class="type-badge" style="background: ${tc.bg}; color: ${tc.color};">${update.updateType}</span></td>
+                <td data-label="Changes">${changesHtml}</td>
+                <td data-label="Actions" style="white-space: nowrap;">
+                    <button class="btn btn-sm btn-success" onclick="Updates.apply('${id}')" style="background:#2e7d32;color:#fff;" title="${applyTitle}">${applyLabel}</button>
+                    <button class="btn btn-sm btn-secondary" onclick="Updates.dismiss('${id}')" title="${isReconcile ? 'Leave local quantity unchanged' : 'Discard this change'}">${dismissLabel}</button>
                     <button class="btn btn-sm btn-primary" onclick="Updates.viewItem('${update.sku}')">View</button>
                 </td>
             </tr>`;
@@ -2400,12 +2458,15 @@ const Scanner = {
                 ],
                 aspectRatio: 1.5
             };
-            await this.instance.start(
+            // Keep the start promise so close() can await it — closing while the camera
+            // is still STARTING used to orphan the stream (camera stayed on).
+            this.startPromise = this.instance.start(
                 { facingMode: 'environment' },
                 config,
                 (decoded) => this.onDecode(decoded),
                 () => { /* per-frame failure — ignore, normal during scanning */ }
             );
+            await this.startPromise;
         } catch (err) {
             this.busy = false;
             this.setStatus('Camera error: ' + (err?.message || err), '#fca5a5');
@@ -2416,13 +2477,33 @@ const Scanner = {
     async close() {
         const modal = UI.el('scannerModal');
         if (modal) modal.classList.add('hidden');
+
+        // Wait for any in-flight start to settle first — otherwise the camera can
+        // finish starting AFTER we stop, leaving it running with the modal hidden.
+        if (this.startPromise) {
+            try { await this.startPromise; } catch (_) { /* start failed — nothing running */ }
+            this.startPromise = null;
+        }
+
         if (this.instance) {
-            try {
-                if (this.instance.isScanning) await this.instance.stop();
-                this.instance.clear();
-            } catch (_) { /* ignore */ }
+            // Stop unconditionally (not gated on isScanning — that flag can lag reality).
+            try { await this.instance.stop(); } catch (_) { /* already stopped */ }
+            try { this.instance.clear(); } catch (_) { /* ignore */ }
             this.instance = null;
         }
+
+        // Belt and braces: kill any leftover camera tracks on the reader's <video>
+        // directly, so the camera light goes off no matter what the library did.
+        document.querySelectorAll('#scannerReader video').forEach(v => {
+            try {
+                const stream = v.srcObject;
+                if (stream) {
+                    stream.getTracks().forEach(t => t.stop());
+                    v.srcObject = null;
+                }
+            } catch (_) { /* ignore */ }
+        });
+
         this.busy = false;
     },
 
@@ -2454,9 +2535,7 @@ const deleteCurrentItem = () => Lookup.deleteCurrent();
 const closeHistoryModal = () => History.close();
 const openAdvancedModal = (context) => Advanced.openModal(context);
 const closeAdvancedModal = () => Advanced.closeModal();
-const syncAllToEbay = () => eBay.syncAll();
 const publishAllToEbay = () => eBay.publishAll();
-const loadEbayInventory = () => eBay.loadInventory();
 const exportEbayToExcel = () => {
     const accountId = eBay.getSelectedAccount();
     if (!accountId) {
@@ -2474,7 +2553,19 @@ const printBarcode = () => window.print();
 const LabelPrint = {
     SETTINGS_KEY: 'labelPrintSettings',
 
-    defaults: { width: 50, height: 30, scale: 100, offsetX: 0, offsetY: 0 },
+    // method: 'system' = OS print dialog (AirPrint/Mopria/desktop); 'share' = image to a BT label app.
+    defaults: { width: 50, height: 30, scale: 100, offsetX: 0, offsetY: 0, method: 'system' },
+
+    // Common label/tape sizes. SUPVAN-style tape printers print a continuous strip,
+    // so tape presets use a generous length and let the printer cut.
+    PRESETS: [
+        { id: '50x30', label: 'Address / shelf 50 × 30 mm', width: 50, height: 30 },
+        { id: '62x29', label: 'Brother 62 × 29 mm', width: 62, height: 29 },
+        { id: '40x30', label: 'Small 40 × 30 mm', width: 40, height: 30 },
+        { id: '12tape', label: 'SUPVAN/Brother 12 mm tape', width: 60, height: 12 },
+        { id: '24tape', label: 'SUPVAN 24 mm tape', width: 70, height: 24 },
+        { id: 'custom', label: 'Custom…', width: null, height: null }
+    ],
 
     load() {
         try { return { ...this.defaults, ...(JSON.parse(localStorage.getItem(this.SETTINGS_KEY) || '{}')) }; }
@@ -2491,12 +2582,14 @@ const LabelPrint = {
             const v = parseFloat(el?.value);
             return Number.isFinite(v) ? v : fallback;
         };
+        const methodEl = document.querySelector('input[name="labelMethod"]:checked');
         return {
             width: get('labelWidth', this.defaults.width),
             height: get('labelHeight', this.defaults.height),
             scale: get('labelScale', this.defaults.scale),
             offsetX: get('labelOffsetX', this.defaults.offsetX),
-            offsetY: get('labelOffsetY', this.defaults.offsetY)
+            offsetY: get('labelOffsetY', this.defaults.offsetY),
+            method: methodEl ? methodEl.value : this.load().method
         };
     },
 
@@ -2508,6 +2601,24 @@ const LabelPrint = {
         set('labelScale', s.scale);
         set('labelOffsetX', s.offsetX);
         set('labelOffsetY', s.offsetY);
+        // Method radios
+        document.querySelectorAll('input[name="labelMethod"]').forEach(r => { r.checked = (r.value === s.method); });
+        // Preset dropdown — select a matching preset, else "custom"
+        const presetSel = UI.el('labelPreset');
+        if (presetSel) {
+            const match = this.PRESETS.find(p => p.width === s.width && p.height === s.height);
+            presetSel.value = match ? match.id : 'custom';
+        }
+    },
+
+    applyPreset() {
+        const presetSel = UI.el('labelPreset');
+        if (!presetSel) return;
+        const p = this.PRESETS.find(x => x.id === presetSel.value);
+        if (!p || p.width == null) return; // "custom" — leave fields as-is
+        const set = (id, v) => { const el = UI.el(id); if (el) el.value = v; };
+        set('labelWidth', p.width);
+        set('labelHeight', p.height);
     },
 
     toggleSettings() {
@@ -2518,76 +2629,434 @@ const LabelPrint = {
         panel.style.display = isOpen ? 'none' : 'block';
     },
 
+    // Resolve current settings (live from UI if the panel is open, else saved) and persist.
+    resolveSettings() {
+        const open = UI.el('labelPrintSettings')?.style.display !== 'none';
+        const settings = open ? this.readFromUI() : this.load();
+        if (open) this.save(settings);
+        return settings;
+    },
+
+    // System print (AirPrint / Mopria / desktop). Renders into the in-page #printLabelArea
+    // and calls window.print() — far more reliable on mobile than a pop-up window.
     print() {
-        if (!State.currentItem) {
-            UI.notify('No item selected', 'error');
-            return;
-        }
+        if (!State.currentItem) { UI.notify('No item selected', 'error'); return; }
         const sku = State.currentItem.SKU;
-        const barcodeImg = UI.el('lookupBarcodeImage');
-        const barcodeSrc = barcodeImg?.src;
-        if (!barcodeSrc) {
-            UI.notify('Barcode not available — try lookup again', 'error');
-            return;
-        }
+        const barcodeSrc = UI.el('lookupBarcodeImage')?.src;
+        if (!barcodeSrc) { UI.notify('Barcode not available — try lookup again', 'error'); return; }
 
-        // Pull live settings from UI if open, otherwise use saved
-        const settingsPanelOpen = UI.el('labelPrintSettings')?.style.display !== 'none';
-        const settings = settingsPanelOpen ? this.readFromUI() : this.load();
-        if (settingsPanelOpen) this.save(settings);
-
+        const settings = this.resolveSettings();
         const w = Math.max(20, Math.min(300, settings.width));
         const h = Math.max(10, Math.min(300, settings.height));
-        const scale = Math.max(50, Math.min(200, settings.scale)) / 100;
-        const ox = Math.max(-50, Math.min(50, settings.offsetX));
-        const oy = Math.max(-50, Math.min(50, settings.offsetY));
 
-        const html = `<!DOCTYPE html>
-<html>
-<head>
-<title>Label ${sku}</title>
-<style>
-    @page { size: ${w}mm ${h}mm; margin: 0; }
-    html, body { margin: 0; padding: 0; }
-    body { width: ${w}mm; height: ${h}mm; }
-    .label {
-        width: ${w}mm; height: ${h}mm;
-        display: flex; flex-direction: column;
-        align-items: center; justify-content: center;
-        box-sizing: border-box; padding: 1mm;
-        transform: scale(${scale}) translate(${ox}mm, ${oy}mm);
-        transform-origin: center center;
-    }
-    .label img { max-width: 100%; max-height: 70%; object-fit: contain; }
-    .label .sku {
-        font-family: monospace; font-size: ${Math.max(8, h * 0.18)}pt;
-        font-weight: bold; margin-top: 1mm; letter-spacing: 1px;
-    }
-    @media print { body { width: ${w}mm; height: ${h}mm; } }
-</style>
-</head>
-<body>
-    <div class="label">
-        <img src="${barcodeSrc}" alt="${sku}">
-        <div class="sku">${sku}</div>
-    </div>
-    <script>
-        window.addEventListener('load', () => {
-            setTimeout(() => { window.print(); setTimeout(() => window.close(), 200); }, 100);
-        });
-    <\/script>
-</body>
-</html>`;
+        // Inject the page size so the OS prints exactly one label at the tape/label dimensions.
+        const styleEl = UI.el('printPageStyle');
+        if (styleEl) {
+            styleEl.textContent = `@page { size: ${w}mm ${h}mm; margin: 0; }
+                #printLabelArea { width: ${w}mm; height: ${h}mm; }
+                #printLabelArea .print-label-sku { font-size: ${Math.max(8, h * 0.18)}pt; }`;
+        }
+        const skuEl = UI.el('printLabelSku');
+        if (skuEl) skuEl.textContent = sku;
 
-        const win = window.open('', '_blank', 'width=400,height=300');
-        if (!win) {
-            UI.notify('Pop-ups blocked — allow pop-ups to print', 'error');
+        const printImg = UI.el('printLabelBarcode');
+        const go = () => { window.print(); };
+        if (printImg) {
+            if (printImg.src === barcodeSrc && printImg.complete) go();
+            else { printImg.onload = go; printImg.onerror = () => UI.notify('Barcode image failed to load', 'error'); printImg.src = barcodeSrc; }
+        } else {
+            go();
+        }
+    },
+
+    // SMART PRINT — the primary button.
+    //   1. If a direct Bluetooth (ESC/POS) printer is connected → print to it (fast).
+    //   2. If that fails → silently fall back to the Share sheet (within the browser's
+    //      ~5s user-activation budget, so it opens like the user tapped Share).
+    //   3. If the browser blocks the auto-Share (budget expired) → gently highlight the
+    //      "Send to Print" button so finishing is one tap. No scary errors, ever.
+    // With no direct printer connected, it goes straight to Share (the SUPVAN path).
+    async smartPrint() {
+        if (!State.currentItem) { UI.notify('No item selected', 'error'); return; }
+
+        const hasDirect = (typeof BtPrint !== 'undefined') && BtPrint.isConnected && BtPrint.isConnected();
+        if (hasDirect) {
+            const status = await BtPrint.tryPrintFast();
+            if (status === 'ok') {
+                UI.notify('Sent to printer ✓ — if nothing printed, tap “Send to Print”', 'success');
+                return;
+            }
+            if (status === 'failed') {
+                // Clean failure, nothing sent → safe to silently fall back to Share.
+                const shared = await this.share({ silentFail: true });
+                if (shared) return;
+                UI.notify('Direct print didn’t work — tap “Send to Print” to finish', 'info');
+                this.flashSendButton();
+                return;
+            }
+            // status === 'unknown' (partial/timeout) — do NOT auto-Share (could double-print).
+            UI.notify('Couldn’t confirm the print. Check the printer; tap “Send to Print” if nothing came out.', 'info');
+            this.flashSendButton();
             return;
         }
-        win.document.write(html);
-        win.document.close();
+
+        // No direct printer → Share immediately (fresh tap → reliably opens the sheet).
+        const shared = await this.share({ silentFail: true });
+        if (!shared) { UI.notify('Tap “Send to Print” to finish', 'info'); this.flashSendButton(); }
+    },
+
+    // Briefly outline the Send-to-Print button so the manual fallback is obvious.
+    flashSendButton() {
+        const b = UI.el('btnSendToPrint');
+        if (!b) return;
+        const prev = b.style.boxShadow;
+        b.style.transition = 'box-shadow 0.2s';
+        b.style.boxShadow = '0 0 0 3px #f97316';
+        setTimeout(() => { b.style.boxShadow = prev; }, 2400);
+    },
+
+    // Render the label (barcode + SKU) to a PNG and hand it to the OS Share sheet.
+    // This is the path for Bluetooth label makers (SUPVAN etc.) that don't speak the
+    // system print stack: save/share the image, then print it from the printer's own app.
+    // Returns true if handled (shared/cancelled/downloaded), false if it couldn't proceed.
+    // opts.silentFail: don't show error toasts (used by smartPrint's auto-fallback).
+    async share(opts = {}) {
+        const silent = opts.silentFail === true;
+        if (!State.currentItem) { if (!silent) UI.notify('No item selected', 'error'); return false; }
+        const sku = State.currentItem.SKU;
+        const barcodeSrc = UI.el('lookupBarcodeImage')?.src;
+        if (!barcodeSrc) { if (!silent) UI.notify('Barcode not available — try lookup again', 'error'); return false; }
+
+        const settings = this.resolveSettings();
+        let blob;
+        try {
+            blob = await this.renderPng(barcodeSrc, sku, settings);
+        } catch (err) {
+            if (!silent) UI.notify('Could not create label image: ' + (err?.message || err), 'error');
+            return false;
+        }
+        const file = new File([blob], `label-${sku}.png`, { type: 'image/png' });
+
+        // Preferred: native Share sheet (Android Chrome + iOS Safari).
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            try {
+                await navigator.share({ files: [file], title: `Label ${sku}` });
+                UI.notify('Shared — print it in your label app', 'success');
+                return true;
+            } catch (err) {
+                if (err?.name === 'AbortError') return true;          // user dismissed — handled
+                if (err?.name === 'NotAllowedError') return false;    // blocked (no activation) — caller shows manual button
+                // any other share error → fall through to download
+            }
+        }
+        // Fallback: download the PNG (desktop / Share unsupported).
+        try {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `label-${sku}.png`;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            UI.notify('Label image saved — open it in your label app to print', 'success');
+            return true;
+        } catch (err) {
+            if (!silent) UI.notify('Could not save label: ' + (err?.message || err), 'error');
+            return false;
+        }
+    },
+
+    // Compose the label onto a canvas at print resolution and return a PNG blob.
+    renderPng(barcodeSrc, sku, settings) {
+        return new Promise((resolve, reject) => {
+            const w = Math.max(20, Math.min(300, settings.width));
+            const h = Math.max(10, Math.min(300, settings.height));
+            const DPMM = 8; // ~203 dpi, standard for thermal label printers
+            const cw = Math.round(w * DPMM);
+            const ch = Math.round(h * DPMM);
+
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => {
+                try {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = cw; canvas.height = ch;
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cw, ch);
+
+                    const pad = Math.round(cw * 0.04);
+                    const skuFont = Math.max(12, Math.round(ch * 0.16));
+                    const skuArea = skuFont + pad;
+                    // Barcode fills the area above the SKU text, keeping aspect ratio.
+                    const availW = cw - pad * 2;
+                    const availH = ch - skuArea - pad;
+                    const ratio = Math.min(availW / img.width, availH / img.height);
+                    const bw = img.width * ratio, bh = img.height * ratio;
+                    ctx.drawImage(img, (cw - bw) / 2, pad, bw, bh);
+
+                    ctx.fillStyle = '#000';
+                    ctx.font = `bold ${skuFont}px monospace`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'bottom';
+                    ctx.fillText(sku, cw / 2, ch - pad / 2);
+
+                    canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/png');
+                } catch (e) { reject(e); }
+            };
+            img.onerror = () => reject(new Error('barcode image failed to load'));
+            img.src = barcodeSrc;
+        });
     }
 };
+
+// ============================================
+// BLUETOOTH PRINT (beta) — direct Web Bluetooth printing, Android Chrome only.
+// iOS Safari has no Web Bluetooth. The SUPVAN protocol is undocumented, so this:
+//   1) connects + dumps the GATT profile (always works — our diagnostic),
+//   2) sends the label as a standard ESC/POS raster (best effort — tape printers
+//      sometimes use proprietary formats; if it fails the dump tells us what to do).
+// ============================================
+const BtPrint = {
+    device: null,
+    server: null,
+    writeChar: null,
+    chars: [],   // [{uuid, char, props}]
+
+    // Broad list so requestDevice can reach common printer services after pairing.
+    OPTIONAL_SERVICES: [
+        0x18f0, 0xff00, 0xffe0, 0xfff0, 0xfee0, 0xfee7, 0xae00, 0xae30,
+        0x180a, 0x180f, 0x1800, 0x1801,
+        '0000ff00-0000-1000-8000-00805f9b34fb',
+        '6e400001-b5a3-f393-e0a9-e50e24dcca9e' // Nordic UART
+    ],
+
+    available() { return typeof navigator !== 'undefined' && !!navigator.bluetooth; },
+
+    setStatus(msg, color) {
+        const el = UI.el('btStatus');
+        if (el) { el.textContent = msg; if (color) el.style.color = color; }
+    },
+
+    open() {
+        const modal = UI.el('btPrintModal');
+        if (!modal) return;
+        modal.classList.remove('hidden');
+        if (!this.available()) {
+            this.setStatus('Web Bluetooth is not supported on this browser. Use Android Chrome — on iPhone use “Save / Share” instead.', '#fca5a5');
+            UI.el('btConnectBtn').disabled = true;
+            return;
+        }
+        UI.el('btConnectBtn').disabled = false;
+        if (!this.server) this.setStatus('Not connected. Turn the printer on, then tap “Connect printer”.', '#94a3b8');
+    },
+
+    close() {
+        const modal = UI.el('btPrintModal');
+        if (modal) modal.classList.add('hidden');
+    },
+
+    async connect() {
+        if (!this.available()) return;
+        try {
+            this.setStatus('Choose your printer in the Bluetooth dialog…', '#94a3b8');
+            this.device = await navigator.bluetooth.requestDevice({
+                acceptAllDevices: true,
+                optionalServices: this.OPTIONAL_SERVICES
+            });
+            this.device.addEventListener('gattserverdisconnected', () => this.onDisconnected());
+            this.setStatus(`Connecting to ${this.device.name || 'printer'}…`, '#94a3b8');
+            this.server = await this.device.gatt.connect();
+
+            // Enumerate services + characteristics (the diagnostic).
+            this.chars = [];
+            const dump = [];
+            const services = await this.server.getPrimaryServices();
+            for (const svc of services) {
+                let chs = [];
+                try { chs = await svc.getCharacteristics(); } catch (_) {}
+                dump.push(`service ${svc.uuid}`);
+                for (const c of chs) {
+                    const p = c.properties;
+                    const props = [p.write && 'write', p.writeWithoutResponse && 'writeNR', p.notify && 'notify', p.read && 'read'].filter(Boolean).join(',');
+                    dump.push(`   char ${c.uuid}  [${props}]`);
+                    if (p.write || p.writeWithoutResponse) this.chars.push({ uuid: c.uuid, char: c, props });
+                }
+            }
+            const dumpEl = UI.el('btServicesDump');
+            if (dumpEl) dumpEl.textContent = dump.join('\n') || '(no services found)';
+
+            // Populate the write-characteristic selector and auto-pick the best candidate.
+            const sel = UI.el('btCharSelect');
+            if (sel) {
+                sel.innerHTML = this.chars.map((c, i) => `<option value="${i}">${c.uuid} [${c.props}]</option>`).join('');
+            }
+            this.writeChar = this.pickBestChar();
+            if (sel && this.writeChar) {
+                const idx = this.chars.findIndex(c => c.char === this.writeChar);
+                if (idx >= 0) sel.value = String(idx);
+            }
+
+            UI.el('btAdvanced').style.display = 'block';
+            UI.el('btPrintBtn').disabled = !this.writeChar;
+            UI.el('btDisconnectBtn').disabled = false;
+            this.setStatus(
+                this.writeChar
+                    ? `Connected to ${this.device.name || 'printer'}. Ready to print.`
+                    : `Connected, but no writable channel found — open “Device capabilities” and send it to me.`,
+                this.writeChar ? '#4ade80' : '#fbbf24'
+            );
+        } catch (err) {
+            if (err?.name === 'NotFoundError') { this.setStatus('No printer selected.', '#94a3b8'); return; }
+            this.setStatus('Connection failed: ' + (err?.message || err), '#fca5a5');
+        }
+    },
+
+    pickBestChar() {
+        if (!this.chars.length) return null;
+        // Prefer known printer write characteristics, then any writeWithoutResponse, then any write.
+        const known = ['2af1', 'ff02', 'ffe1', '6e400002'];
+        for (const k of known) {
+            const m = this.chars.find(c => c.uuid.includes(k));
+            if (m) return m.char;
+        }
+        const nr = this.chars.find(c => c.props.includes('writeNR'));
+        return (nr || this.chars[0]).char;
+    },
+
+    onDisconnected() {
+        this.server = null; this.writeChar = null;
+        UI.el('btPrintBtn').disabled = true;
+        UI.el('btDisconnectBtn').disabled = true;
+        this.setStatus('Printer disconnected.', '#fbbf24');
+    },
+
+    disconnect() {
+        try { if (this.device?.gatt?.connected) this.device.gatt.disconnect(); } catch (_) {}
+        this.onDisconnected();
+    },
+
+    // True only when there's a live GATT connection AND a writable channel.
+    isConnected() {
+        return !!(this.device && this.device.gatt && this.device.gatt.connected && this.writeChar);
+    },
+
+    // Direct print used by LabelPrint.smartPrint(). Returns a STATUS, never throws:
+    //   'ok'      — the full raster was written
+    //   'failed'  — failed before ANY byte was sent → safe to auto-fall back to Share
+    //   'unknown' — some bytes went out then it errored/timed out → ambiguous, so the
+    //               caller must NOT auto-Share (could double-print); it asks the user.
+    async tryPrintFast(timeoutMs = 6000) {
+        if (!this.isConnected() || !State.currentItem) return 'failed';
+        const barcodeSrc = UI.el('lookupBarcodeImage')?.src;
+        if (!barcodeSrc) return 'failed';
+        const widthDots = Math.max(64, Math.min(832, parseInt(UI.el('btWidthDots')?.value) || 384));
+
+        let bytes;
+        try { bytes = await this.buildEscPosRaster(barcodeSrc, State.currentItem.SKU, widthDots); }
+        catch (_) { return 'failed'; } // nothing sent yet
+
+        const useNR = this.chars.find(c => c.char === this.writeChar)?.props.includes('writeNR');
+        let sentAny = false;
+        const send = (async () => {
+            for (let i = 0; i < bytes.length; i += 100) {
+                const chunk = bytes.slice(i, i + 100);
+                if (useNR && this.writeChar.writeValueWithoutResponse) await this.writeChar.writeValueWithoutResponse(chunk);
+                else await this.writeChar.writeValue(chunk);
+                sentAny = true;
+                await new Promise(r => setTimeout(r, 12));
+            }
+        })();
+        try {
+            await Promise.race([send, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs))]);
+            return 'ok';
+        } catch (_) {
+            return sentAny ? 'unknown' : 'failed';
+        }
+    },
+
+    async printCurrent() {
+        if (!State.currentItem) { UI.notify('No item selected', 'error'); return; }
+        const barcodeSrc = UI.el('lookupBarcodeImage')?.src;
+        if (!barcodeSrc) { UI.notify('Barcode not available — try lookup again', 'error'); return; }
+
+        // Honor a manual characteristic override.
+        const sel = UI.el('btCharSelect');
+        if (sel && this.chars[sel.value]) this.writeChar = this.chars[sel.value].char;
+        if (!this.writeChar) { this.setStatus('No writable channel selected.', '#fca5a5'); return; }
+
+        const widthDots = Math.max(64, Math.min(832, parseInt(UI.el('btWidthDots')?.value) || 384));
+        try {
+            this.setStatus('Rendering label…', '#94a3b8');
+            const bytes = await this.buildEscPosRaster(barcodeSrc, State.currentItem.SKU, widthDots);
+            this.setStatus(`Sending ${bytes.length} bytes…`, '#94a3b8');
+            await this.sendChunked(bytes);
+            this.setStatus('Sent ✓ — if nothing printed, open “Device capabilities” and send it to me to tune the format.', '#4ade80');
+            UI.notify('Label sent to printer', 'success');
+        } catch (err) {
+            this.setStatus('Print failed: ' + (err?.message || err), '#fca5a5');
+        }
+    },
+
+    // Render label to a monochrome canvas, then encode as ESC/POS GS v 0 raster.
+    buildEscPosRaster(barcodeSrc, sku, widthDots) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => {
+                try {
+                    const W = widthDots - (widthDots % 8); // multiple of 8
+                    const pad = Math.round(W * 0.04);
+                    const skuFont = Math.max(16, Math.round(W * 0.07));
+                    const ratio = (W - pad * 2) / img.width;
+                    const bh = Math.round(img.height * ratio);
+                    const H = pad + bh + Math.round(skuFont * 1.4) + pad;
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = W; canvas.height = H;
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+                    ctx.drawImage(img, pad, pad, W - pad * 2, bh);
+                    ctx.fillStyle = '#000';
+                    ctx.font = `bold ${skuFont}px monospace`;
+                    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+                    ctx.fillText(sku, W / 2, pad + bh + 4);
+
+                    const data = ctx.getImageData(0, 0, W, H).data;
+                    const widthBytes = W / 8;
+                    const raster = new Uint8Array(widthBytes * H);
+                    for (let y = 0; y < H; y++) {
+                        for (let x = 0; x < W; x++) {
+                            const i = (y * W + x) * 4;
+                            // luminance; dark pixel => print bit
+                            const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+                            if (lum < 128) raster[y * widthBytes + (x >> 3)] |= (0x80 >> (x & 7));
+                        }
+                    }
+                    // ESC @ (init) + GS v 0 raster + feed
+                    const header = [0x1B, 0x40, 0x1D, 0x76, 0x30, 0x00,
+                        widthBytes & 0xff, (widthBytes >> 8) & 0xff, H & 0xff, (H >> 8) & 0xff];
+                    const feed = [0x0A, 0x0A, 0x0A];
+                    const out = new Uint8Array(header.length + raster.length + feed.length);
+                    out.set(header, 0);
+                    out.set(raster, header.length);
+                    out.set(feed, header.length + raster.length);
+                    resolve(out);
+                } catch (e) { reject(e); }
+            };
+            img.onerror = () => reject(new Error('barcode image failed to load'));
+            img.src = barcodeSrc;
+        });
+    },
+
+    async sendChunked(bytes, chunkSize = 100) {
+        const useNR = this.chars.find(c => c.char === this.writeChar)?.props.includes('writeNR');
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+            const chunk = bytes.slice(i, i + chunkSize);
+            if (useNR && this.writeChar.writeValueWithoutResponse) await this.writeChar.writeValueWithoutResponse(chunk);
+            else await this.writeChar.writeValue(chunk);
+            await new Promise(r => setTimeout(r, 12)); // small gap so the printer buffer keeps up
+        }
+    }
+};
+
 const getAdjustQty = () => parseInt(UI.el('adjustQtyInput')?.value) || 1;
 
 // Full backup import
@@ -2621,7 +3090,7 @@ async function importFullBackup(input) {
 
 // Header dropdown onchange handler — see eBay.setActiveAccount for the impl.
 function setActiveAccountFromHeader() {
-    eBay.setActiveAccount(document.getElementById('globalAccountSelect')?.value || 'all');
+    eBay.setActiveAccount(document.getElementById('globalAccountSelect')?.value || '');
 }
 
 // ============================================
@@ -2647,12 +3116,20 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('click', (e) => {
         if (e.target.id === 'historyModal') History.close();
         if (e.target.id === 'editItemModal') EditItem.close();
+        if (e.target.id === 'scannerModal') Scanner.close();
+        if (e.target.id === 'btPrintModal') BtPrint.close();
     });
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             History.close();
             EditItem.close();
+            Scanner.close();
+            BtPrint.close();
         }
+    });
+    // Stop the camera if the app is backgrounded mid-scan (phone lock, tab switch).
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden && Scanner.instance) Scanner.close();
     });
 
     // Initial focus

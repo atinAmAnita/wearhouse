@@ -99,7 +99,7 @@
         <div class="toolbar">
             <label style="color:#94a3b8; font-size:0.85rem;">Account:</label>
             <select id="accountFilter" onchange="onAccountChange()" style="padding:6px 10px; background:#2a2a2a; border:1px solid #444; color:#ddd; border-radius:4px; font-size:0.9rem;">
-                <option value="all">All accounts</option>
+                <option value="">-- Select Account --</option>
             </select>
             <button onclick="analyze()" id="analyzeBtn">Re-analyze</button>
             <span class="snapshot-at" id="snapshotAt"></span>
@@ -136,7 +136,23 @@
             <div class="card-detail hidden" id="detail-convert"></div>
         </div>
 
-        <!-- Card 3: generate fresh -->
+        <!-- Card 3: preserve location (no 000, last 3 digits = location) -->
+        <div class="card convert" id="card-tail">
+            <div class="card-header">
+                <div>
+                    <div class="card-title"><span class="icon">⇄</span> Preserve location <span style="font-size:0.8rem; color:#fbbf24;">(no 000 — last 4 digits = location)</span></div>
+                    <div class="card-count" id="count-tail">—</div>
+                    <p class="card-desc">SKUs like <code>317187231303</code> → keep last 4 (<code>1303</code>) as position, fresh itemCode → <code>0000010001303</code>. Skipped if that location is already taken.</p>
+                </div>
+                <div class="card-actions">
+                    <button class="btn-toggle" onclick="toggleDetail('tail')">Show items ▾</button>
+                    <button class="btn-queue" id="queue-tail" onclick="queueCategory('convert_tail')">Queue these</button>
+                </div>
+            </div>
+            <div class="card-detail hidden" id="detail-tail"></div>
+        </div>
+
+        <!-- Card 4: generate fresh -->
         <div class="card fresh" id="card-fresh">
             <div class="card-header">
                 <div>
@@ -162,11 +178,12 @@
     <script>
         let savedPassword = '';
         let lastPlan = [];
-        let selectedAccountId = 'all';
+        let selectedAccountId = '';
 
         const categoryMap = {
             skip:    { detailId: 'detail-skip',    countId: 'count-skip',    actions: ['skip'] },
             convert: { detailId: 'detail-convert', countId: 'count-convert', actions: ['convert_divider'] },
+            tail:    { detailId: 'detail-tail',    countId: 'count-tail',    actions: ['convert_tail'] },
             fresh:   { detailId: 'detail-fresh',   countId: 'count-fresh',   actions: ['generate_fresh'] }
         };
 
@@ -178,7 +195,8 @@
         function populateAccountDropdown(accounts, totalAllAccounts) {
             const sel = document.getElementById('accountFilter');
             const current = selectedAccountId;
-            const opts = [`<option value="all">All accounts (${totalAllAccounts} items)</option>`];
+            // No "All accounts": SKU conversion runs one account at a time.
+            const opts = ['<option value="">-- Select Account --</option>'];
             for (const a of accounts) {
                 opts.push(`<option value="${a.id}">${escapeHtml(a.name)} — ${a.itemCount} item${a.itemCount === 1 ? '' : 's'}</option>`);
             }
@@ -203,10 +221,15 @@
                 savedPassword = password;
                 document.getElementById('loginBox').style.display = 'none';
                 document.getElementById('content').style.display = 'block';
-                const filterLabel = selectedAccountId === 'all' ? 'all accounts' : `account: ${selectedAccountId}`;
-                document.getElementById('snapshotAt').textContent = `Analyzed ${new Date().toLocaleString()} — ${filterLabel}`;
-                lastPlan = data.plan;
                 populateAccountDropdown(data.accounts || [], data.totalItemsAllAccounts || 0);
+                lastPlan = data.plan || [];
+                if (!selectedAccountId) {
+                    document.getElementById('snapshotAt').textContent = 'Pick an account above to analyze its SKUs';
+                } else {
+                    const accName = [...document.getElementById('accountFilter').options]
+                        .find(o => o.value === selectedAccountId)?.textContent || selectedAccountId;
+                    document.getElementById('snapshotAt').textContent = `Analyzed ${new Date().toLocaleString()} — ${accName}`;
+                }
                 renderCards();
                 document.getElementById('resultsBlock').style.display = 'none';
             } catch (err) {
@@ -267,11 +290,17 @@
             if (items.length === 0) return;
             // Confirm only when count > 10 (per agreed UX)
             if (items.length > 10) {
-                const label = action === 'convert_divider' ? 'conversions (000 divider)' : 'new SKU assignments';
+                const labels = {
+                    convert_divider: 'conversions (000 divider)',
+                    convert_tail: 'location-preserving conversions (last 3 digits)',
+                    generate_fresh: 'new SKU assignments'
+                };
+                const label = labels[action] || 'SKU changes';
                 if (!confirm(`Queue ${items.length} ${label} as pending Updates?\n\nNothing renames yet — they'll appear in the Updates tab. Apply individually (or use Apply Filtered with type=SKU_CHANGE) when ready. Each Apply pushes to eBay first; local only changes on eBay success.`)) return;
             }
 
-            const btnId = action === 'convert_divider' ? 'queue-convert' : 'queue-fresh';
+            const btnIds = { convert_divider: 'queue-convert', convert_tail: 'queue-tail', generate_fresh: 'queue-fresh' };
+            const btnId = btnIds[action] || 'queue-fresh';
             const btn = document.getElementById(btnId);
             btn.disabled = true;
             const originalText = btn.textContent;

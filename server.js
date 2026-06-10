@@ -80,11 +80,6 @@ function saveLocalAccounts() {
 // UNIFIED DATA ACCESS LAYER
 // ============================================
 const data = {
-    // Returns current database mode
-    getMode() {
-        return DB_MODE;
-    },
-
     async getAllItems() {
         if (!USE_LOCAL_DB) {
             const items = await db.inventory.getAll();
@@ -529,9 +524,14 @@ const ebayAPI = {
         if (!itemMatch) throw new Error('GetItem: no Item in response');
         const itemXml = itemMatch[1];
         const price = parseFloat(itemXml.match(/<StartPrice[^>]*>([^<]*)<\/StartPrice>/)?.[1] || itemXml.match(/<BuyItNowPrice[^>]*>([^<]*)<\/BuyItNowPrice>/)?.[1] || '0');
-        const quantity = parseInt(itemXml.match(/<Quantity>([^<]*)<\/Quantity>/)?.[1] || '0');
+        // eBay <Quantity> is the listing TOTAL (ever listed); <QuantitySold> is how many sold.
+        // AVAILABLE = total - sold. We expose all three so delta math stays correct when items
+        // have already sold (push total = desiredAvailable + sold).
+        const quantityTotal = parseInt(itemXml.match(/<Quantity>([^<]*)<\/Quantity>/)?.[1] || '0');
+        const quantitySold = parseInt(itemXml.match(/<QuantitySold>([^<]*)<\/QuantitySold>/)?.[1] || '0');
+        const quantity = Math.max(0, quantityTotal - quantitySold); // available
         const title = itemXml.match(/<Title>([^<]*)<\/Title>/)?.[1] || '';
-        const state = { price, quantity, title };
+        const state = { price, quantity, quantityTotal, quantitySold, title };
         this._listingStateCache.set(key, { state, at: Date.now() });
         return state;
     },
@@ -747,29 +747,6 @@ const ebayAPI = {
     async getCategorySuggestions(accountId, query) { return this.apiRequest(accountId, 'GET', `/commerce/taxonomy/v1/category_tree/0/get_category_suggestions?q=${encodeURIComponent(query)}`); },
     async getItemAspectsForCategory(accountId, categoryId) { return this.apiRequest(accountId, 'GET', `/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category?category_id=${categoryId}`); },
 
-    // Offer and Listing APIs
-    async getOffers(accountId, sku) {
-        // Paginate to fetch ALL offers for a SKU (rare to have >100, but possible for multi-marketplace)
-        const PAGE_SIZE = 100;
-        const MAX_PAGES = 20;
-        let offset = 0;
-        const all = [];
-        let total = 0;
-        for (let page = 0; page < MAX_PAGES; page++) {
-            const resp = await this.apiRequest(accountId, 'GET', `/sell/inventory/v1/offer?sku=${encodeURIComponent(sku)}&limit=${PAGE_SIZE}&offset=${offset}`);
-            const offers = resp?.offers || [];
-            all.push(...offers);
-            if (typeof resp?.total === 'number') total = resp.total;
-            if (offers.length === 0) break;
-            if (offers.length < PAGE_SIZE) break;
-            if (total > 0 && all.length >= total) break;
-            offset += PAGE_SIZE;
-        }
-        return { offers: all, total: total || all.length, size: all.length };
-    },
-    async createOffer(accountId, offerData) { return this.apiRequest(accountId, 'POST', '/sell/inventory/v1/offer', offerData); },
-    async publishOffer(accountId, offerId) { return this.apiRequest(accountId, 'POST', `/sell/inventory/v1/offer/${offerId}/publish`); },
-    async deleteOffer(accountId, offerId) { return this.apiRequest(accountId, 'DELETE', `/sell/inventory/v1/offer/${offerId}`); },
 
     // Revise listing via Trading API (for legacy listings not managed by Inventory API)
     async reviseItemPrice(accountId, ebayItemId, newPrice, newQuantity = null) {
@@ -1470,51 +1447,6 @@ const ebayAPI = {
     },
 
     // Create and publish a listing (offer) for an inventory item
-    async createAndPublishListing(accountId, warehouseItem, policies) {
-        const sku = warehouseItem.SKU;
-        const marketplaceId = 'EBAY_US';
-
-        // Check if offer already exists
-        try {
-            const existingOffers = await this.getOffers(accountId, sku);
-            if (existingOffers.offers?.length > 0) {
-                // Offer exists - it's already listed or we can update it
-                const offer = existingOffers.offers[0];
-                return { offerId: offer.offerId, status: offer.status, listingId: offer.listing?.listingId, existing: true };
-            }
-        } catch (err) {
-            // No offers exist, continue to create
-        }
-
-        // Create offer
-        const offerData = {
-            sku: sku,
-            marketplaceId: marketplaceId,
-            format: 'FIXED_PRICE',
-            listingDescription: warehouseItem.Description || `Item ${sku}`,
-            availableQuantity: warehouseItem.Quantity,
-            pricingSummary: {
-                price: {
-                    value: String(warehouseItem.Price || '9.99'),
-                    currency: 'USD'
-                }
-            },
-            listingPolicies: {
-                fulfillmentPolicyId: policies.fulfillmentPolicyId,
-                paymentPolicyId: policies.paymentPolicyId,
-                returnPolicyId: policies.returnPolicyId
-            },
-            categoryId: warehouseItem.CategoryId || '175673' // Default: Other category
-        };
-
-        const offer = await this.createOffer(accountId, offerData);
-
-        // Publish the offer to create actual listing
-        const published = await this.publishOffer(accountId, offer.offerId);
-
-        return { offerId: offer.offerId, listingId: published.listingId, status: 'PUBLISHED' };
-    },
-
     // Get or use default business policies
     async getBusinessPolicies(accountId) {
         const marketplaceId = 'EBAY_US';
@@ -1617,6 +1549,9 @@ const ebayAPI = {
             let mutated = false;
             const newChanges = update.changes.map(c => {
                 const updated = { ...c };
+                // Delta (stock movement) changes need no rebasing — they're applied relative to
+                // live eBay at apply time, so they already compose with sales. Leave untouched.
+                if (c.delta !== undefined && c.delta !== null) return updated;
                 if (c.field === 'price') {
                     const ebayPrice = parseFloat(ebayItem.price) || 0;
                     if (Math.abs((c.oldValue ?? 0) - ebayPrice) > 0.01) {
@@ -1749,11 +1684,18 @@ const ebayAPI = {
 
                     const ebayChanges = this.detectEbayChanges(ebayItem, snapshot);
 
-                    // Backfill missing imageUrl + ebayAccountId opportunistically
+                    // Always retag the item to the pulling account — a pull is the user's
+                    // explicit declaration that "these are this account's listings."
+                    // Previously this only backfilled when missing, which left items
+                    // permanently stuck on whichever account pulled them first.
                     const backfill = {};
                     if (ebayItem.pictureUrl && !localItem.imageUrl) backfill.imageUrl = ebayItem.pictureUrl;
-                    if (!localItem.ebaySync?.ebayAccountId) {
-                        backfill.ebaySync = { ...(localItem.ebaySync || {}), ebayAccountId: accountId, ebayItemId: ebayItem.itemId };
+                    if (localItem.ebaySync?.ebayAccountId !== accountId) {
+                        backfill.ebaySync = {
+                            ...(localItem.ebaySync || {}),
+                            ebayAccountId: accountId,
+                            ebayItemId: ebayItem.itemId || localItem.ebaySync?.ebayItemId || null
+                        };
                     }
                     if (Object.keys(backfill).length > 0) await data.updateItem(sku, backfill);
 
@@ -1917,11 +1859,15 @@ const ebayAPI = {
                 const fullItem = await data.getItem(sku);
                 if (!fullItem) continue;
 
-                // Backfill missing imageUrl + ebayAccountId opportunistically
+                // Always retag to the syncing account (matches pullFromEbay behavior).
                 const _bf = {};
                 if (ebayItem.pictureUrl && !fullItem.imageUrl) _bf.imageUrl = ebayItem.pictureUrl;
-                if (!fullItem.ebaySync?.ebayAccountId) {
-                    _bf.ebaySync = { ...(fullItem.ebaySync || {}), ebayAccountId: accountId, ebayItemId: ebayItem.itemId };
+                if (fullItem.ebaySync?.ebayAccountId !== accountId) {
+                    _bf.ebaySync = {
+                        ...(fullItem.ebaySync || {}),
+                        ebayAccountId: accountId,
+                        ebayItemId: ebayItem.itemId || fullItem.ebaySync?.ebayItemId || null
+                    };
                 }
                 if (Object.keys(_bf).length > 0) await data.updateItem(sku, _bf);
 
@@ -2163,7 +2109,7 @@ app.get('/api/updates', async (req, res) => {
             // For SKU_CHANGE: try the new SKU first (post-rename), else the old SKU.
             let acc = null;
             if (obj.updateType === 'SKU_CHANGE') {
-                const newSku = (obj.changes || []).find(c => c.field === 'SKU')?.newValue;
+                const newSku = (obj.changes || []).find(c => /^sku$/i.test(c.field))?.newValue;
                 acc = (newSku && skuToAccount.get(newSku)) || skuToAccount.get(obj.sku) || null;
             } else {
                 acc = skuToAccount.get(obj.sku) || null;
@@ -2239,6 +2185,15 @@ app.post('/api/updates/:id/apply', ah(async (req, res) => {
         if (!update) throw new HttpError(404, 'Pending update not found');
         const { sku, updateType, changes } = update;
 
+        // Account isolation guard: an update may only be pushed through the account
+        // that owns the item. Prevents one account's change from ever hitting another's
+        // listing, regardless of which account is selected in the UI.
+        const guardItem = await data.getItem(sku);
+        const ownerAccount = guardItem?.ebaySync?.ebayAccountId;
+        if (ownerAccount && ownerAccount !== accountId) {
+            throw new HttpError(409, `This change belongs to account ${ownerAccount}. Switch to that account to apply it.`);
+        }
+
         // UPDATE: eBay-first flow with drift check
         if (updateType === 'UPDATE') {
             const item = await data.getItem(sku);
@@ -2248,39 +2203,70 @@ app.post('/api/updates/:id/apply', ah(async (req, res) => {
             const descChange = changes.find(c => c.field === 'description');
             const hasEbayListing = !!item.ebaySync?.ebayItemId;
 
-            // Gate 1: drift check against fresh eBay state
-            if (hasEbayListing && !force && (priceChange || qtyChange)) {
+            // Read live eBay state once — it's the source of truth for what's currently listed.
+            // If we CAN'T read it for an eBay-listed item, abort the apply (unless forced):
+            // pushing off stale local data would defeat the delta model and risk lost stock.
+            // The update stays queued so the user can retry once eBay is reachable.
+            let liveEbay = null;
+            if (hasEbayListing && (priceChange || qtyChange)) {
                 try {
-                    const current = await ebayAPI.getCurrentListingState(accountId, item.ebaySync.ebayItemId);
-                    const drifted = [];
-                    if (priceChange && Math.abs(current.price - (priceChange.oldValue ?? 0)) > 0.01) {
-                        drifted.push({ field: 'price', expected: priceChange.oldValue, actual: current.price });
+                    liveEbay = await ebayAPI.getCurrentListingState(accountId, item.ebaySync.ebayItemId);
+                } catch (e) {
+                    console.warn(`Could not read live eBay state for ${sku}:`, e.message);
+                    if (!force) {
+                        throw new HttpError(503, `Couldn't read current eBay state for ${sku} — try again in a moment. (Nothing was changed.)`);
                     }
-                    if (qtyChange && current.quantity !== (qtyChange.oldValue ?? 0)) {
-                        drifted.push({ field: 'quantity', expected: qtyChange.oldValue, actual: current.quantity });
-                    }
-                    if (drifted.length > 0) {
-                        throw new HttpError(409, 'eBay has changed since this update was queued', { sku, drifted });
-                    }
-                } catch (driftErr) {
-                    if (driftErr.status === 409) throw driftErr;
-                    console.warn(`Drift check failed for ${sku}, proceeding:`, driftErr.message);
                 }
             }
 
-            // Gate 2: push to eBay first. On failure, nothing else happens.
-            if (hasEbayListing && (priceChange || qtyChange)) {
-                const newPrice = priceChange ? priceChange.newValue : item.price;
-                const newQty = qtyChange ? qtyChange.newValue : null;
-                await ebayAPI.reviseItemPrice(accountId, item.ebaySync.ebayItemId, newPrice, newQty);
+            // Resolve the target AVAILABLE quantity (what we want sellable on eBay / in stock).
+            //   - Movement (delta): target = liveAvailable + delta → composes with sales, never overwrites them.
+            //   - Recount (absolute newValue): drift-checked set.
+            let targetQty = null;          // target available
+            let pushTotalQty = null;       // what to send to eBay <Quantity> = available + sold
+            if (qtyChange) {
+                const isDelta = qtyChange.delta !== undefined && qtyChange.delta !== null;
+                const sold = liveEbay ? (liveEbay.quantitySold || 0) : 0;
+                const baseAvail = (liveEbay && typeof liveEbay.quantity === 'number') ? liveEbay.quantity : item.currentQty;
+                if (isDelta) {
+                    targetQty = Math.max(0, baseAvail + qtyChange.delta);
+                } else {
+                    // Absolute recount — guard against an unseen live change.
+                    if (liveEbay && !force && liveEbay.quantity !== (qtyChange.oldValue ?? 0)) {
+                        throw new HttpError(409, 'eBay quantity changed since this recount was queued', {
+                            sku, drifted: [{ field: 'quantity', expected: qtyChange.oldValue, actual: liveEbay.quantity }]
+                        });
+                    }
+                    targetQty = Math.max(0, qtyChange.newValue);
+                }
+                // eBay <Quantity> is the total (available + already-sold).
+                pushTotalQty = targetQty + sold;
             }
 
-            // Gate 3: commit local + history + snapshot (only reached if eBay confirmed)
+            // Price drift guard (price is always absolute).
+            if (priceChange && liveEbay && !force && Math.abs(liveEbay.price - (priceChange.oldValue ?? 0)) > 0.01) {
+                throw new HttpError(409, 'eBay price changed since this update was queued', {
+                    sku, drifted: [{ field: 'price', expected: priceChange.oldValue, actual: liveEbay.price }]
+                });
+            }
+
+            // Push to eBay first. On failure, nothing else happens (invariant preserved).
+            if (hasEbayListing && (priceChange || qtyChange)) {
+                const newPrice = priceChange ? priceChange.newValue : item.price;
+                await ebayAPI.reviseItemPrice(accountId, item.ebaySync.ebayItemId, newPrice, pushTotalQty);
+            }
+
+            // Commit local + history + snapshot (only reached if eBay confirmed).
             const updates = {};
             if (qtyChange) {
-                updates.currentQty = qtyChange.newValue;
-                const diff = qtyChange.newValue - item.currentQty;
-                await data.addHistory(sku, { date: new Date(), action: diff >= 0 ? 'ADJUST_UP' : 'ADJUST_DOWN', qty: diff, newTotal: qtyChange.newValue, note: `Quantity changed to ${qtyChange.newValue}` });
+                if (targetQty === null) targetQty = item.currentQty;
+                updates.currentQty = targetQty;
+                const diff = targetQty - item.currentQty;
+                const isDelta = qtyChange.delta !== undefined && qtyChange.delta !== null;
+                const note = isDelta
+                    ? `Stock movement ${qtyChange.delta >= 0 ? '+' : ''}${qtyChange.delta} → ${targetQty}`
+                    : `Quantity recounted to ${targetQty}`;
+                await data.addHistory(sku, { date: new Date(), action: diff >= 0 ? 'ADJUST_UP' : 'ADJUST_DOWN', qty: diff, newTotal: targetQty, note });
             }
             if (priceChange) {
                 updates.price = priceChange.newValue;
@@ -2313,6 +2299,34 @@ app.post('/api/updates/:id/apply', ah(async (req, res) => {
                 if (localUpdate) { localUpdate.status = 'pushed'; saveLocalData(); }
             }
             return res.json({ message: hasEbayListing ? 'Update applied & synced to eBay' : 'Update applied locally', updateType, ebaySynced: hasEbayListing });
+        }
+
+        // RECONCILE — drift flagged by the daily check. Applying ACCEPTS eBay's value
+        // locally (no push to eBay; eBay is treated as the source of truth for the count).
+        // To instead keep the local count and push it, the user edits/recounts the item.
+        if (updateType === 'RECONCILE') {
+            const item = await data.getItem(sku);
+            if (!item) throw new HttpError(404, 'Item not found');
+            const qtyChange = changes.find(c => c.field === 'quantity');
+            const ebayQty = qtyChange ? qtyChange.newValue : item.currentQty;
+            const diff = ebayQty - item.currentQty;
+            await data.updateItem(sku, {
+                currentQty: ebayQty,
+                ebaySync: {
+                    ...(item.ebaySync || {}),
+                    snapshot: { ...(item.ebaySync?.snapshot || {}), quantity: ebayQty, takenAt: new Date() },
+                    lastSyncTime: new Date(),
+                    status: 'synced'
+                }
+            });
+            await data.addHistory(sku, {
+                date: new Date(), action: diff >= 0 ? 'ADJUST_UP' : 'ADJUST_DOWN', qty: diff, newTotal: ebayQty,
+                note: `Reconciled to eBay count (${ebayQty})`
+            });
+            await data.dismissPendingUpdate(req.params.id);
+            if (!USE_LOCAL_DB) await db.PendingUpdate.findByIdAndUpdate(req.params.id, { status: 'pushed' });
+            else { const lu = (localInventory.pendingUpdates || []).find(u => u._id === req.params.id); if (lu) { lu.status = 'pushed'; saveLocalData(); } }
+            return res.json({ message: 'Reconciled to eBay count', updateType, ebaySynced: false });
         }
 
         // CREATE / DELETE / SKU_CHANGE — eBay-first ordering not applicable (no existing listing or local-only op)
@@ -2467,9 +2481,10 @@ app.post('/api/inventory', async (req, res) => {
             if (ownerAccount && ownerAccount !== accountId) {
                 return res.status(400).json({ error: `Item ${itemId} already exists on another account (${ownerAccount}). Switch to that account or use a different Item ID.` });
             }
-            const newQty = existingByItemId.currentQty + qtyToAdd;
-            // Stage changes - do NOT apply to item yet
-            const pendingChanges = [{ field: 'quantity', oldValue: existingByItemId.currentQty, newValue: newQty }];
+            // Receiving stock is a MOVEMENT (delta), not an absolute target. On apply it's
+            // added relative to live eBay quantity, so a sale that happened meanwhile is
+            // never overwritten: gained +5 while 2 sold => net +3, nothing lost.
+            const pendingChanges = [{ field: 'quantity', delta: qtyToAdd, oldValue: existingByItemId.currentQty }];
             if (price > 0) pendingChanges.push({ field: 'price', oldValue: existingByItemId.price, newValue: parseFloat(price) });
             if (description) pendingChanges.push({ field: 'description', oldValue: existingByItemId.description, newValue: description });
             await data.createPendingUpdate({ sku: existingByItemId.sku, itemCode: existingByItemId.itemCode, description: description || existingByItemId.description, updateType: 'UPDATE', changes: pendingChanges });
@@ -2510,13 +2525,19 @@ app.post('/api/inventory', async (req, res) => {
 app.put('/api/inventory/:sku', async (req, res) => {
     try {
         const { sku } = req.params;
-        const { quantity, price, description } = req.body;
+        const { quantity, quantityDelta, price, description } = req.body;
         const item = await data.getItem(sku);
         if (!item) return res.status(404).json({ error: 'Item not found' });
 
-        // Stage changes - do NOT apply to item yet
+        // Stage changes - do NOT apply to item yet.
+        // quantityDelta = stock MOVEMENT (+received / -removed), composes with eBay sales.
+        // quantity = absolute RECOUNT (set exact), drift-checked on apply.
         const pendingChanges = [];
-        if (quantity !== undefined) pendingChanges.push({ field: 'quantity', oldValue: item.currentQty, newValue: parseInt(quantity) });
+        if (quantityDelta !== undefined && quantityDelta !== null && parseInt(quantityDelta) !== 0) {
+            pendingChanges.push({ field: 'quantity', delta: parseInt(quantityDelta), oldValue: item.currentQty });
+        } else if (quantity !== undefined) {
+            pendingChanges.push({ field: 'quantity', oldValue: item.currentQty, newValue: parseInt(quantity) });
+        }
         if (price !== undefined) pendingChanges.push({ field: 'price', oldValue: item.price, newValue: parseFloat(price) });
         if (description !== undefined) pendingChanges.push({ field: 'description', oldValue: item.description, newValue: description });
         if (pendingChanges.length > 0) {
@@ -2802,31 +2823,6 @@ app.get('/api/ebay/inventory/:accountId', async (req, res) => {
     catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/ebay/user/:accountId', async (req, res) => {
-    try {
-        const result = await ebayAPI.getUserInfo(req.params.accountId);
-        res.json(result);
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// Active listings using Trading API (GetMyeBaySelling)
-app.get('/api/ebay/listings/:accountId', async (req, res) => {
-    try {
-        const result = await ebayAPI.getActiveListings(req.params.accountId);
-        res.json(result);
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.post('/api/ebay/sync/:accountId/:sku', async (req, res) => {
-    try {
-        const item = await data.getItem(req.params.sku);
-        if (!item) return res.status(404).json({ error: 'Item not found' });
-        const result = await ebayAPI.syncItemToEbay(req.params.accountId, { SKU: item.sku, Price: item.price || 0, Quantity: item.currentQty, Description: item.description, FullLocation: item.fullLocation, Condition: item.condition || 'NEW', ItemSpecifics: item.itemSpecifics || {} });
-        await data.addHistory(req.params.sku, { date: new Date(), action: 'EBAY_SYNC', qty: 0, newTotal: item.currentQty, note: `Synced to eBay` });
-        res.json({ message: 'Item synced to eBay', result });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 // Pull from eBay to local inventory
 app.post('/api/ebay/pull/:accountId', ah(async (req, res) => {
     const accountId = req.params.accountId;
@@ -2871,13 +2867,18 @@ app.post('/api/cron/sync-all-accounts', ah(async (req, res) => {
     const accounts = await data.getAllAccounts();
     const results = [];
     for (const account of accounts) {
-        if (!account.hasValidToken) {
-            results.push({ accountId: account.id, account: account.name, status: 'skipped', reason: 'no valid token' });
-            continue;
-        }
         // Per-account cron toggle (default enabled when field absent)
         if (account.cronEnabled === false) {
             results.push({ accountId: account.id, account: account.name, status: 'skipped', reason: 'cron disabled by admin' });
+            continue;
+        }
+        // Refresh the access token FIRST every run. eBay access tokens expire ~2h, so a
+        // 15-min cron keeps the session alive on its own — independent of whether the pull
+        // succeeds. If the refresh token is hard-expired, surface needs_reconnect clearly.
+        try {
+            await ebayAPI.refreshAccessToken(account.id);
+        } catch (err) {
+            results.push({ accountId: account.id, account: account.name, status: 'needs_reconnect', error: err.message });
             continue;
         }
         try {
@@ -3467,95 +3468,120 @@ app.post('/api/admin/backfill-account-ids', ah(async (req, res) => {
 // ============================================
 // SKU CONVERTER — one-shot tool to normalize all SKUs to the standard 13-digit format
 // ============================================
-// Standard format: <6-digit itemCode><3-digit drawer><4-digit position>
+// Standard format: <6-digit itemCode><3-digit drawer><4-digit position>. Default drawer is 000.
 //
-// Rules (per item):
-//   - Already 13 digits all-numeric → SKIP
-//   - Staged item (CREATE pending) → SKIP (not committed yet)
-//   - Contains literal "000" substring → split: before=itemCode, after=position, drawer=000
-//   - Otherwise → generate fresh: smallest unused 6-digit itemCode, drawer=000, smallest unused position
+// Classification is multi-pass so "more legit" SKUs reserve their warehouse location
+// (drawer 000 + position) BEFORE weaker guesses try to claim one:
+//   1. skip            — already 13 numeric digits, or staged (CREATE pending)
+//   2. convert_divider — all-numeric with a usable "000": rightmost split into
+//                        itemCode (1-6 digits) + position (1-4 digits), drawer=000.
+//   3. convert_tail    — no usable "000" but the last 4 chars are digits: keep them as the
+//                        position (preserve physical location), fresh itemCode, drawer=000 —
+//                        ONLY if that location isn't already taken by a skip/divider SKU.
+//   4. generate_fresh  — everything else (or a tail whose location collides): smallest unused
+//                        itemCode + smallest unused position in drawer 000.
 //
-// If item has an eBay listing, the new SKU is pushed to eBay via ReviseFixedPriceItem.
-// If eBay push fails → don't rename local (invariant preserved).
+// On Apply, a converted item with an eBay listing is pushed via ReviseFixedPriceItem first;
+// local only renames on eBay success (invariant preserved).
 
-function classifySku(item, usedItemCodes, usedPositionsInDefaultDrawer, plannedNewSkus, fitItemCodes) {
-    const sku = item.sku;
-    // Already proper
-    if (/^\d{13}$/.test(sku)) {
-        return { action: 'skip', reason: 'already standard format' };
+// Rightmost valid "000" split. Returns { before, after } or null.
+function splitDivider(sku) {
+    if (!/^\d+$/.test(sku)) return null;
+    for (let idx = sku.length - 3; idx >= 1; idx--) {
+        if (sku.substr(idx, 3) !== '000') continue;
+        const before = sku.substring(0, idx);
+        const after = sku.substring(idx + 3);
+        if (before.length < 1 || before.length > 6) continue;
+        if (after.length < 1 || after.length > 4) continue;
+        return { before, after };
     }
-    // Staged items are CREATE pending — leave alone
-    if (item.staged) {
-        return { action: 'skip', reason: 'staged (CREATE pending)' };
-    }
-    // Has "000" divider — convert
-    const dividerIdx = sku.indexOf('000');
-    if (dividerIdx > 0) {
-        const before = sku.substring(0, dividerIdx);
-        const after = sku.substring(dividerIdx + 3);
-        if (/^\d+$/.test(before) && /^\d+$/.test(after) && before.length <= 6 && after.length <= 4) {
-            const newItemCode = before.padStart(6, '0');
-            const newPosition = after.padStart(4, '0');
-            const newSku = newItemCode + '000' + newPosition;
-            if (!plannedNewSkus.has(newSku)) {
-                plannedNewSkus.add(newSku);
-                return { action: 'convert_divider', newSku, newItemCode, newDrawer: '000', newPosition };
-            }
-            // collision — fall through to generate_fresh
-        }
-    }
-    // Generate fresh: next unused itemCode + next unused position in drawer 000
-    let nextCode = fitItemCodes.last || 0;
-    while (true) {
-        nextCode++;
-        if (nextCode > 999999) throw new Error('Ran out of 6-digit item codes');
-        const padded = String(nextCode).padStart(6, '0');
-        if (!usedItemCodes.has(padded)) {
-            fitItemCodes.last = nextCode;
-            usedItemCodes.add(padded);
-            // Position in drawer 000
-            let nextPos = fitItemCodes.lastPos || 0;
-            while (true) {
-                nextPos++;
-                if (nextPos > 9999) throw new Error('Ran out of positions in drawer 000');
-                const paddedPos = String(nextPos).padStart(4, '0');
-                if (!usedPositionsInDefaultDrawer.has(paddedPos)) {
-                    fitItemCodes.lastPos = nextPos;
-                    usedPositionsInDefaultDrawer.add(paddedPos);
-                    const newSku = padded + '000' + paddedPos;
-                    plannedNewSkus.add(newSku);
-                    return { action: 'generate_fresh', newSku, newItemCode: padded, newDrawer: '000', newPosition: paddedPos };
-                }
-            }
-        }
-    }
+    return null;
 }
 
 function buildConvertPlan(allItems) {
-    // Pre-compute occupied sets (only proper items + non-staged hold real codes/positions)
     const usedItemCodes = new Set();
-    const usedPositionsInDefaultDrawer = new Set();
+    const reservedPos000 = new Set(); // positions in drawer 000 held by skip/divider SKUs
+
+    // Reserve from already-standard SKUs.
     for (const item of allItems) {
         if (/^\d{13}$/.test(item.sku)) {
             usedItemCodes.add(item.sku.substring(0, 6));
-            if (item.sku.substring(6, 9) === '000') {
-                usedPositionsInDefaultDrawer.add(item.sku.substring(9));
-            }
+            if (item.sku.substring(6, 9) === '000') reservedPos000.add(item.sku.substring(9));
         }
     }
-    const plannedNewSkus = new Set();
-    const fitItemCodes = { last: 0, lastPos: 0 };
-    const plan = [];
+
+    const plannedSkus = new Set();
+    const prelim = [];
+
+    // Pass 1 — skips and dividers (these reserve codes + drawer-000 positions).
     for (const item of allItems) {
-        const result = classifySku(item, usedItemCodes, usedPositionsInDefaultDrawer, plannedNewSkus, fitItemCodes);
-        plan.push({
-            sku: item.sku,
-            description: item.description || '',
-            hasEbayListing: !!item.ebaySync?.ebayItemId,
-            ebayItemId: item.ebaySync?.ebayItemId || null,
-            ebayAccountId: item.ebaySync?.ebayAccountId || null,
-            ...result
-        });
+        const sku = item.sku;
+        if (/^\d{13}$/.test(sku)) { prelim.push({ item, action: 'skip', reason: 'already standard format' }); continue; }
+        if (item.staged) { prelim.push({ item, action: 'skip', reason: 'staged (CREATE pending)' }); continue; }
+
+        const div = splitDivider(sku);
+        if (div) {
+            const newItemCode = div.before.padStart(6, '0');
+            const newPosition = div.after.padStart(4, '0');
+            const newSku = newItemCode + '000' + newPosition;
+            if (!plannedSkus.has(newSku)) {
+                plannedSkus.add(newSku);
+                usedItemCodes.add(newItemCode);
+                reservedPos000.add(newPosition);
+                prelim.push({ item, action: 'convert_divider', newSku, newItemCode, newDrawer: '000', newPosition });
+                continue;
+            }
+            // newSku collision — treat as tail/fresh below
+        }
+
+        // Tail candidate: last 4 chars are digits → preserve as position (location).
+        const tail = sku.slice(-4);
+        if (/^\d{4}$/.test(tail)) prelim.push({ item, action: '__tail__', candidatePos: tail });
+        else prelim.push({ item, action: '__fresh__' });
+    }
+
+    // Pass 2 — assign tails (preserve location if free), then fresh.
+    const takenPos000 = new Set(reservedPos000);
+    let nextCode = 0, nextPos = 0;
+    const assignCode = () => {
+        do { nextCode++; if (nextCode > 999999) throw new Error('Ran out of 6-digit item codes'); }
+        while (usedItemCodes.has(String(nextCode).padStart(6, '0')));
+        const c = String(nextCode).padStart(6, '0'); usedItemCodes.add(c); return c;
+    };
+    const assignFreePos = () => {
+        do { nextPos++; if (nextPos > 9999) throw new Error('Ran out of positions in drawer 000'); }
+        while (takenPos000.has(String(nextPos).padStart(4, '0')));
+        const p = String(nextPos).padStart(4, '0'); takenPos000.add(p); return p;
+    };
+
+    const wrap = (item, r) => ({
+        sku: item.sku,
+        description: item.description || '',
+        hasEbayListing: !!item.ebaySync?.ebayItemId,
+        ebayItemId: item.ebaySync?.ebayItemId || null,
+        ebayAccountId: item.ebaySync?.ebayAccountId || null,
+        ...r
+    });
+
+    const plan = [];
+    for (const pre of prelim) {
+        if (pre.action === 'skip' || pre.action === 'convert_divider') { plan.push(wrap(pre.item, pre)); continue; }
+
+        if (pre.action === '__tail__' && !takenPos000.has(pre.candidatePos)) {
+            takenPos000.add(pre.candidatePos);
+            const code = assignCode();
+            const newSku = code + '000' + pre.candidatePos;
+            plannedSkus.add(newSku);
+            plan.push(wrap(pre.item, { action: 'convert_tail', newSku, newItemCode: code, newDrawer: '000', newPosition: pre.candidatePos }));
+            continue;
+        }
+
+        // Fresh (or a tail whose location was already taken).
+        const code = assignCode();
+        const pos = assignFreePos();
+        const newSku = code + '000' + pos;
+        plannedSkus.add(newSku);
+        plan.push(wrap(pre.item, { action: 'generate_fresh', newSku, newItemCode: code, newDrawer: '000', newPosition: pos }));
     }
     return plan;
 }
@@ -3580,17 +3606,21 @@ app.post('/api/admin/convert/preview', ah(async (req, res) => {
     // Append synthetic 'none' bucket if there are untagged items
     if (noneCount > 0) accountsForUi.push({ id: 'none', name: 'Not assigned to any account', itemCount: noneCount });
 
-    // Apply the filter for the actual plan
-    let items = allItemsRaw;
+    // Account isolation: only build a plan when a specific account is chosen.
+    // No account / 'all' → empty plan (the accounts list is still returned so the
+    // dropdown can populate). This keeps SKU conversion strictly per-account.
+    let plan = [];
     if (accountId && accountId !== 'all') {
-        if (accountId === 'none') items = items.filter(i => !i.ebaySync?.ebayAccountId);
-        else items = items.filter(i => i.ebaySync?.ebayAccountId === accountId);
+        const items = accountId === 'none'
+            ? allItemsRaw.filter(i => !i.ebaySync?.ebayAccountId)
+            : allItemsRaw.filter(i => i.ebaySync?.ebayAccountId === accountId);
+        plan = buildConvertPlan(items);
     }
-    const plan = buildConvertPlan(items);
     const summary = {
         total: plan.length,
         skip: plan.filter(p => p.action === 'skip').length,
         convertDivider: plan.filter(p => p.action === 'convert_divider').length,
+        convertTail: plan.filter(p => p.action === 'convert_tail').length,
         generateFresh: plan.filter(p => p.action === 'generate_fresh').length,
         withEbayListing: plan.filter(p => p.hasEbayListing && p.action !== 'skip').length
     };
@@ -3607,11 +3637,11 @@ app.post('/api/admin/convert/execute', ah(async (req, res) => {
         ? new Set(req.body.categories)
         : null; // null = all non-skip categories
     const accountId = req.body.accountId || null;
+    // Account isolation: refuse to convert across all accounts at once.
+    if (!accountId || accountId === 'all') throw new HttpError(400, 'Select a specific account before converting SKUs');
     let items = await data.getAllItemsRaw();
-    if (accountId && accountId !== 'all') {
-        if (accountId === 'none') items = items.filter(i => !i.ebaySync?.ebayAccountId);
-        else items = items.filter(i => i.ebaySync?.ebayAccountId === accountId);
-    }
+    if (accountId === 'none') items = items.filter(i => !i.ebaySync?.ebayAccountId);
+    else items = items.filter(i => i.ebaySync?.ebayAccountId === accountId);
     const plan = buildConvertPlan(items);
 
     const pending = await data.getPendingUpdates('pending');
@@ -3758,6 +3788,14 @@ app.get('/api/keep-alive', async (req, res) => {
             }
         }
 
+        // Daily drift check: compare live eBay available qty vs local; flag mismatches.
+        try {
+            results.reconciliation = await runReconciliation();
+        } catch (recErr) {
+            console.error('Keep-alive reconciliation failed:', recErr.message);
+            results.reconciliation = { error: recErr.message };
+        }
+
         res.json({
             status: 'ok',
             timestamp: new Date().toISOString(),
@@ -3767,6 +3805,56 @@ app.get('/api/keep-alive', async (req, res) => {
         res.status(500).json({ status: 'error', error: err.message });
     }
 });
+
+// Reconciliation: per account, fetch live eBay listings (one call) and compare each
+// listing's AVAILABLE quantity to the local count. A mismatch that ISN'T already explained
+// by a pending quantity change (delta or recount) becomes a RECONCILE entry in the Updates
+// tab for the user to resolve. Re-runnable: won't duplicate an existing RECONCILE for a SKU.
+async function runReconciliation() {
+    const summary = { checked: 0, drift: 0, created: 0, perAccount: [] };
+    const accounts = await data.getAllAccounts();
+    const pending = await data.getPendingUpdates('pending');
+    const skusWithPendingQty = new Set(
+        pending.filter(u => (u.changes || []).some(c => c.field === 'quantity')).map(u => u.sku)
+    );
+    const skusWithReconcile = new Set(
+        pending.filter(u => u.updateType === 'RECONCILE').map(u => u.sku)
+    );
+
+    for (const account of accounts) {
+        const row = { accountId: account.id, account: account.name, drift: 0, created: 0, error: null };
+        try {
+            const ebayData = await ebayAPI.getActiveListings(account.id);
+            for (const listing of (ebayData.items || [])) {
+                const sku = listing.sku || listing.itemId;
+                const local = await data.getItem(sku);
+                // Only reconcile items we track for THIS account.
+                if (!local || local.ebaySync?.ebayAccountId !== account.id) continue;
+                summary.checked++;
+                const ebayAvail = parseInt(listing.quantity) || 0;
+                const localQty = local.currentQty || 0;
+                if (ebayAvail === localQty) continue;
+                row.drift++; summary.drift++;
+                // Skip if a pending qty change or an existing RECONCILE already covers this SKU.
+                if (skusWithPendingQty.has(sku) || skusWithReconcile.has(sku)) continue;
+                await data.createPendingUpdate({
+                    sku,
+                    itemCode: local.itemCode,
+                    description: local.description || '',
+                    updateType: 'RECONCILE',
+                    changes: [{ field: 'quantity', oldValue: localQty, newValue: ebayAvail, drift: true }]
+                });
+                skusWithReconcile.add(sku);
+                row.created++; summary.created++;
+            }
+        } catch (err) {
+            row.error = err.message;
+        }
+        summary.perAccount.push(row);
+    }
+    console.log('[reconcile]', JSON.stringify(summary));
+    return summary;
+}
 
 // Global error handler — must be last app.use()
 app.use(errorMiddleware);

@@ -23,14 +23,19 @@
             <h1>STOCKFORGE</h1>
             <p class="subtitle">Inventory Control System</p>
             <a href="/admin" class="admin-link">Admin Panel</a>
-            <div class="header-account-bar" style="display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap;">
-                <label for="globalAccountSelect" style="color:#94a3b8; font-size:0.85rem;">Active account:</label>
-                <select id="globalAccountSelect" onchange="setActiveAccountFromHeader()" style="padding:6px 10px; background:#2a2a2a; border:1px solid #444; color:#ddd; border-radius:4px; font-size:0.9rem; min-width:200px;">
-                    <option value="all">All accounts</option>
+            <div class="account-bar" id="accountBar">
+                <label for="globalAccountSelect">Account</label>
+                <select id="globalAccountSelect" onchange="setActiveAccountFromHeader()">
+                    <option value="">-- Select Account --</option>
                 </select>
-                <span id="globalAccountHint" style="color:#6b7280; font-size:0.8rem;"></span>
+                <span id="globalAccountHint"></span>
             </div>
         </header>
+
+        <!-- Shown only when no account is selected -->
+        <div id="noAccountBanner" class="no-account-banner hidden">
+            <span>👆 Pick an account above to begin — your inventory and updates are per-account.</span>
+        </div>
 
         <nav class="tabs">
             <button class="tab-btn" data-tab="add">Add Item</button>
@@ -152,11 +157,41 @@
                 <div class="barcode-container">
                     <img id="lookupBarcodeImage" alt="Barcode">
                     <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-                        <button class="btn btn-secondary" onclick="LabelPrint.print()">Print Label</button>
+                        <button class="btn btn-primary" onclick="LabelPrint.smartPrint()" title="Prints to a connected Bluetooth printer; if none, opens your label app automatically">🏷 Print</button>
+                        <button class="btn btn-secondary" id="btnSendToPrint" onclick="LabelPrint.share()" title="Send the label image to your label app (e.g. SUPVAN) to print">📤 Send to Print</button>
+                        <button class="btn btn-secondary" onclick="BtPrint.open()" title="Connect a direct Bluetooth (ESC/POS) printer — Android Chrome">📶 Bluetooth setup</button>
+                        <button class="btn btn-secondary" onclick="LabelPrint.print()" title="System / desktop print dialog (AirPrint / Mopria)">🖨 System</button>
                         <button class="btn btn-sm" style="background:#444;color:#ddd;" onclick="LabelPrint.toggleSettings()">⚙ Settings</button>
                     </div>
                     <div id="labelPrintSettings" style="display:none; margin-top:12px; padding:12px; background:var(--bg-input,#1a1a1a); border:1px solid #333; border-radius:6px; max-width:520px; text-align:left;">
                         <h4 style="margin:0 0 10px 0; color:#94a3b8; font-size:0.85rem; letter-spacing:1px; text-transform:uppercase;">Label Print Settings</h4>
+
+                        <!-- Default print method -->
+                        <div style="margin-bottom:12px; font-size:0.85rem;">
+                            <span style="color:#94a3b8; display:block; margin-bottom:6px;">Default print method</span>
+                            <label style="display:inline-flex; align-items:center; gap:6px; margin-right:16px; cursor:pointer;">
+                                <input type="radio" name="labelMethod" value="system"> System printer (AirPrint / Mopria / desktop)
+                            </label>
+                            <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+                                <input type="radio" name="labelMethod" value="share"> Share image (Bluetooth label app)
+                            </label>
+                        </div>
+
+                        <!-- Label size preset -->
+                        <div style="margin-bottom:12px; font-size:0.85rem;">
+                            <label style="display:flex; flex-direction:column; gap:4px;">
+                                <span style="color:#94a3b8;">Label / tape size</span>
+                                <select id="labelPreset" onchange="LabelPrint.applyPreset()" style="padding:6px; background:#222; border:1px solid #444; color:#ddd; border-radius:4px;">
+                                    <option value="50x30">Address / shelf 50 × 30 mm</option>
+                                    <option value="62x29">Brother 62 × 29 mm</option>
+                                    <option value="40x30">Small 40 × 30 mm</option>
+                                    <option value="12tape">SUPVAN/Brother 12 mm tape</option>
+                                    <option value="24tape">SUPVAN 24 mm tape</option>
+                                    <option value="custom">Custom…</option>
+                                </select>
+                            </label>
+                        </div>
+
                         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; font-size:0.85rem;">
                             <label style="display:flex; flex-direction:column; gap:4px;">
                                 <span style="color:#94a3b8;">Width (mm)</span>
@@ -180,7 +215,23 @@
                             </label>
                             <div></div>
                         </div>
-                        <p style="color:#6b7280; font-size:0.75rem; margin:10px 0 0;">Saved in your browser. Adjust if printer alignment is off. Label content: barcode + SKU.</p>
+                        <p style="color:#6b7280; font-size:0.75rem; margin:10px 0 0;">Saved in your browser. Adjust offsets if printer alignment is off. Label content: barcode + SKU.</p>
+                        <details style="margin-top:10px; font-size:0.8rem; color:#94a3b8;">
+                            <summary style="cursor:pointer; color:#60a5fa;">Printer setup help</summary>
+                            <div style="margin-top:8px; line-height:1.5;">
+                                <strong style="color:#ddd;">System printer (AirPrint / Mopria):</strong>
+                                <ul style="margin:4px 0 10px; padding-left:18px;">
+                                    <li><b>iPhone:</b> the printer must support <b>AirPrint</b>. Make sure it's on the same Wi-Fi. Tap <b>System Print</b> → pick it in the iOS print sheet.</li>
+                                    <li><b>Android:</b> the printer must support <b>Mopria</b> (or have its plugin installed). Same Wi-Fi → tap <b>System Print</b> → pick it.</li>
+                                    <li>The app can't see or auto-pick the printer (the OS handles that) — just choose your label size above so it prints the right dimensions.</li>
+                                </ul>
+                                <strong style="color:#ddd;">Bluetooth label maker (SUPVAN, etc.):</strong>
+                                <ul style="margin:4px 0 0; padding-left:18px;">
+                                    <li>Tap <b>Save / Share</b> → choose the SUPVAN app in the share sheet (or “Save to Photos”, then import it in SUPVAN) → print from there.</li>
+                                    <li>Pair the printer once inside the SUPVAN app itself, not in the browser.</li>
+                                </ul>
+                            </div>
+                        </details>
                     </div>
                 </div>
 
@@ -276,6 +327,7 @@
                     <option value="UPDATE">UPDATE only</option>
                     <option value="DELETE">DELETE only</option>
                     <option value="SKU_CHANGE">SKU_CHANGE only</option>
+                    <option value="RECONCILE">RECONCILE (drift) only</option>
                 </select>
                 <select id="updatesAgeFilter" class="styled-select" onchange="Updates.applyFilters()">
                     <option value="all">All ages</option>
@@ -340,22 +392,27 @@
                 <p>Admin panel: <a href="/admin">/admin</a></p>
             </div>
 
-            <!-- Account Selection & Sync (shown when accounts exist) -->
+            <!-- Account Sync (shown when accounts exist). Account is chosen in the header. -->
             <div id="ebayControls" class="ebay-controls hidden">
-                <!-- Account Selector -->
-                <div class="form-group" style="max-width: 400px; margin: 0 auto 20px;">
-                    <label for="accountSelect">Select eBay Account</label>
-                    <select id="accountSelect" class="form-control" style="width: 100%; padding: 12px; border: 2px solid #e9ecef; border-radius: 8px; font-size: 1rem;">
-                        <option value="">-- Select Account --</option>
-                    </select>
+                <p style="text-align:center; color:var(--text-muted); margin-bottom:18px;">
+                    Operating on: <strong id="ebayActiveAccountLabel" style="color:var(--accent-primary);">none — pick one above</strong>
+                </p>
+
+                <div class="sync-group">
+                    <div class="sync-group-label">⬇ Get from eBay</div>
+                    <div class="sync-actions">
+                        <button class="btn" onclick="eBay.sync()" id="syncBtn" style="background:#0288d1; border-color:#0288d1; color:#fff;" title="Smart two-way: auto-applies sales, queues everything else for review.">eBay Sync (recommended)</button>
+                        <button class="btn btn-primary" onclick="eBay.compare()" id="compareBtn" style="background:#1565c0; border-color:#1565c0; color:#fff;" title="Fetch eBay state and queue differences in Updates tab for review.">Compare with eBay</button>
+                        <button class="btn" onclick="eBay.pull()" id="pullBtn" style="background:#0288d1; border-color:#0288d1; color:#fff;" title="Safe refresh: records eBay sales and applies eBay values only where you haven't changed things locally. Pending updates are kept.">Pull from eBay (Refresh)</button>
+                    </div>
                 </div>
 
-                <div class="sync-actions">
-                    <button class="btn" onclick="eBay.pull()" id="pullBtn" style="background:#c62828; border-color:#c62828; color:#fff;" title="Danger: overwrites local database with eBay values. Confirmation required.">Pull from eBay (Overwrite)</button>
-                    <button class="btn btn-primary" onclick="eBay.compare()" id="compareBtn" style="background:#1565c0; border-color:#1565c0; color:#fff;" title="Fetch eBay state and queue differences in Updates tab for review. Safest option.">Compare with eBay</button>
-                    <button class="btn btn-success" onclick="eBay.push()" id="pushBtn" style="background:#2e7d32; border-color:#2e7d32; color:#fff;" title="Apply all pending updates in the Updates tab to eBay.">Push Pending Updates</button>
-                    <button class="btn" onclick="eBay.sync()" id="syncBtn" style="background:#0288d1; border-color:#0288d1; color:#fff;" title="Smart two-way: auto-applies sales, queues everything else for review.">eBay Sync</button>
-                    <button class="btn" onclick="publishAllToEbay()" id="publishBtn" style="background: #9c27b0; border-color: #9c27b0; color: white;" title="Create new eBay listings from inventory items not yet on eBay.">Publish New Listings</button>
+                <div class="sync-group">
+                    <div class="sync-group-label">⬆ Send to eBay</div>
+                    <div class="sync-actions">
+                        <button class="btn btn-success" onclick="eBay.push()" id="pushBtn" style="background:#2e7d32; border-color:#2e7d32; color:#fff;" title="Apply all approved pending updates in the Updates tab to eBay.">Push Pending Updates</button>
+                        <button class="btn" onclick="publishAllToEbay()" id="publishBtn" style="background: #9c27b0; border-color: #9c27b0; color: white;" title="Create new eBay listings from inventory items not yet on eBay.">Publish New Listings</button>
+                    </div>
                 </div>
 
                 <!-- Comparison Results -->
@@ -642,6 +699,46 @@
     </div>
 
     <div id="notification" class="notification hidden"></div>
+
+    <!-- Bluetooth Printer modal (experimental, Android Chrome) -->
+    <div id="btPrintModal" class="modal hidden" style="position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:9999; display:flex; align-items:center; justify-content:center; padding:16px;">
+        <div style="background:#1a1a1a; border:1px solid #333; border-radius:10px; max-width:560px; width:100%; max-height:88vh; overflow:auto; padding:18px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h3 style="margin:0; color:#f97316;">📶 Bluetooth Printer <span style="font-size:0.7rem; color:#fbbf24;">BETA</span></h3>
+                <button class="btn btn-sm" style="background:#444; color:#fff;" onclick="BtPrint.close()">✕ Close</button>
+            </div>
+            <p id="btStatus" style="color:#94a3b8; font-size:0.9rem; margin:0 0 12px;">Not connected.</p>
+            <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
+                <button class="btn btn-primary" id="btConnectBtn" onclick="BtPrint.connect()">Connect printer</button>
+                <button class="btn btn-success" id="btPrintBtn" onclick="BtPrint.printCurrent()" style="background:#2e7d32; color:#fff;" disabled>Print current label</button>
+                <button class="btn btn-secondary" id="btDisconnectBtn" onclick="BtPrint.disconnect()" disabled>Disconnect</button>
+            </div>
+            <div id="btAdvanced" style="display:none; font-size:0.85rem; color:#cbd5e1;">
+                <label style="display:flex; flex-direction:column; gap:4px; margin-bottom:10px;">
+                    <span style="color:#94a3b8;">Write characteristic (auto-picked; change if print fails)</span>
+                    <select id="btCharSelect" style="padding:6px; background:#222; border:1px solid #444; color:#ddd; border-radius:4px;"></select>
+                </label>
+                <label style="display:flex; flex-direction:column; gap:4px; margin-bottom:10px;">
+                    <span style="color:#94a3b8;">Print width (dots) — try 384 (58mm) or match your tape</span>
+                    <input type="number" id="btWidthDots" value="384" min="64" max="832" step="8" style="padding:6px; background:#222; border:1px solid #444; color:#ddd; border-radius:4px;">
+                </label>
+                <details style="margin-top:6px;">
+                    <summary style="cursor:pointer; color:#60a5fa;">Device capabilities (send me this if it won't print)</summary>
+                    <pre id="btServicesDump" style="white-space:pre-wrap; background:#0a0a0a; padding:10px; border-radius:6px; font-size:0.75rem; max-height:240px; overflow:auto; margin-top:8px;"></pre>
+                </details>
+            </div>
+        </div>
+    </div>
+
+    <!-- In-page label print target. Hidden on screen; shown alone during printing.
+         More reliable on mobile (iOS/Android) than a pop-up window. -->
+    <div id="printLabelArea" aria-hidden="true">
+        <div class="print-label">
+            <img id="printLabelBarcode" alt="">
+            <div id="printLabelSku" class="print-label-sku"></div>
+        </div>
+    </div>
+    <style id="printPageStyle"></style>
 
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
     <script src="app.js"></script>

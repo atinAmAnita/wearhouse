@@ -94,11 +94,15 @@ const pendingUpdateSchema = new mongoose.Schema({
     sku: { type: String, required: true, index: true },
     itemCode: { type: String },
     description: { type: String },
-    updateType: { type: String, required: true, enum: ['CREATE', 'UPDATE', 'DELETE', 'SKU_CHANGE'] },
+    updateType: { type: String, required: true, enum: ['CREATE', 'UPDATE', 'DELETE', 'SKU_CHANGE', 'RECONCILE'] },
     changes: [{
         field: { type: String, required: true },
         oldValue: { type: mongoose.Schema.Types.Mixed },
-        newValue: { type: mongoose.Schema.Types.Mixed }
+        newValue: { type: mongoose.Schema.Types.Mixed },
+        // delta = signed stock movement (received/removed); composes with eBay sales on apply.
+        // drift = flag for RECONCILE entries. Both MUST be declared or Mongoose strips them on save.
+        delta: { type: Number },
+        drift: { type: Boolean }
     }],
     status: { type: String, default: 'pending', enum: ['pending', 'dismissed', 'pushed'] },
     createdAt: { type: Date, default: Date.now },
@@ -207,12 +211,6 @@ const inventory = {
             { $set: { ebaySync: syncData, lastModified: new Date() } },
             { new: true }
         ).lean();
-    },
-
-    async getByEbayItemId(ebayItemId) {
-        await connectDB();
-        if (!isConnected) return null;
-        return InventoryItem.findOne({ 'ebaySync.ebayItemId': ebayItemId }).lean();
     }
 };
 
